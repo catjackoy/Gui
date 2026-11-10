@@ -1,0 +1,3388 @@
+--!strict
+-- CATHUB GUI LIB
+-- Monochrome Roblox UI inspired by Project Real's visual language.
+
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local Players = game:GetService("Players")
+local ContentProvider = game:GetService("ContentProvider")
+
+local LocalPlayer = Players.LocalPlayer
+
+local KittenHub = {}
+KittenHub.Version = "0.6.2"
+KittenHub.AssetId = "rbxassetid://131425307214118"
+KittenHub.DefaultAssets = {
+	Logo = "rbxassetid://131425307214118",
+	Paw = "rbxassetid://131136157222328",
+	Heart = "rbxassetid://107252414250704",
+	Sleeping = "rbxassetid://112356892711029",
+	Peek = "rbxassetid://133697879389288",
+	Curled = "rbxassetid://101414414893719",
+	DarkCat = "rbxassetid://118910476036241",
+	DropdownCat = "rbxassetid://98425969504037",
+	Sparkles = "rbxassetid://114850152769331",
+	Home = "rbxassetid://118174015024924",
+	Plus = "rbxassetid://98329354716868",
+	Players = "rbxassetid://125376145853165",
+	Settings = "rbxassetid://87200505076227",
+	Bell = "rbxassetid://80479928306450",
+	Unload = "rbxassetid://93174476369835",
+	ToggleUI = "rbxassetid://94264300792153",
+	-- Alternate roles. Nothing in the library reaches for these on its own; they
+	-- exist so a script can pick a subject-matching icon instead of a generic
+	-- paw. Pass the role name as IconRole.
+	CrossedRifles = "rbxassetid://130005119002593",
+	Shield = "rbxassetid://72509035967594",
+	Horse = "rbxassetid://99101952385157",
+	Gun = "rbxassetid://72587317513615",
+	Money = "rbxassetid://117009994405006",
+	MoneyBag = "rbxassetid://117403966034571",
+	Bear = "rbxassetid://100189939993137",
+	Bison = "rbxassetid://139284799775207",
+	Gator = "rbxassetid://119651820074451",
+}
+
+-- Artwork is not drawn to a common margin: the later icons sit in a wider
+-- transparent border, so at the same label size their subject rendered visibly
+-- smaller than the cat and gear icons next to them. Scaling the label rather
+-- than the layout keeps every row and tab the same height.
+KittenHub.AssetScales = {
+	[KittenHub.DefaultAssets.CrossedRifles] = 1.45,
+	[KittenHub.DefaultAssets.Horse] = 1.45,
+	[KittenHub.DefaultAssets.Gun] = 1.45,
+	[KittenHub.DefaultAssets.Money] = 1.45,
+	[KittenHub.DefaultAssets.MoneyBag] = 1.45,
+	-- The animals are drawn side-on and fill four fifths of their artwork
+	-- horizontally, where the icons above fill around two thirds. At 1.45 they
+	-- ran past the edges of the label, so they take a smaller step up.
+	[KittenHub.DefaultAssets.Bear] = 1.2,
+	[KittenHub.DefaultAssets.Bison] = 1.2,
+	[KittenHub.DefaultAssets.Gator] = 1.2,
+}
+
+-- Roblox cannot load Real's bundled Geist/JetBrains Mono WOFF2 files directly.
+-- Fredoka One, Builder Sans, and Builder Mono provide a native visual equivalent.
+local function font(family: string, weight: Enum.FontWeight, fallback: string): Font
+	local ok, value = pcall(Font.new, "rbxasset://fonts/families/" .. family .. ".json", weight)
+	if ok and value then
+		return value
+	end
+	warn("[CATHUB GUI LIB] Font family unavailable:", family, "- falling back to", fallback)
+	return Font.new("rbxasset://fonts/families/" .. fallback .. ".json", weight)
+end
+
+-- Builder Sans is the Roblox UI default: a neutral grotesk with open apertures
+-- and straight terminals. Next to Fredoka One's round display letters it read as
+-- two unrelated typefaces, and at 14-18px its thin strokes washed out against the
+-- near-black surfaces. Nunito is rounded like the headings, carries more weight
+-- at small sizes, and ships with the engine.
+local Fonts = {
+	Display = font("FredokaOne", Enum.FontWeight.Regular, "SourceSansPro"),
+	Body = font("Nunito", Enum.FontWeight.Medium, "BuilderSans"),
+	Medium = font("Nunito", Enum.FontWeight.SemiBold, "BuilderSans"),
+	Semibold = font("Nunito", Enum.FontWeight.Bold, "BuilderSans"),
+	Bold = font("Nunito", Enum.FontWeight.ExtraBold, "BuilderSans"),
+	-- Numeric readouts stay in the rounded family so a slider percentage matches
+	-- its label; only true technical input (textbox, keybind) keeps the mono face.
+	Value = font("Nunito", Enum.FontWeight.Bold, "BuilderSans"),
+	Mono = font("BuilderMono", Enum.FontWeight.Medium, "RobotoMono"),
+}
+
+-- Hairline transparency per surface role. These were scattered literals between
+-- 0.74 and 0.9, which put most borders past the point where a 1px line survives
+-- on a near-black background: the panels lost their edges and the whole window
+-- flattened out. Keeping them in one table also makes the whole set tunable.
+local Line = {
+	Window = 0.46,
+	Panel = 0.52,
+	Card = 0.56,
+	Control = 0.5,
+	Tile = 0.54,
+	Popup = 0.44,
+	-- The second, tighter outline drawn inside buttons and notifications. It is
+	-- meant to be felt rather than seen, so it stays well behind the outer edge.
+	Inner = 0.78,
+	TabSelected = 0.54,
+}
+
+local MAX_NOTIFICATIONS = 5
+-- Dropdown popup geometry. The option list is sized from these rather than from
+-- the layout's AbsoluteContentSize, which lags a rebuild by a frame or two: a
+-- height taken from a stale measurement cut the last row off.
+local DROPDOWN_OPTION_HEIGHT = 40
+local DROPDOWN_OPTION_PADDING = 4
+local DROPDOWN_SEARCH_HEIGHT = 34
+local DROPDOWN_MAX_LIST_HEIGHT = 246
+-- Seconds an on-screen asset may stay unloaded before its glyph placeholder is
+-- shown. The watcher keeps checking afterwards: a late arrival has to be able to
+-- take the glyph back down.
+local FALLBACK_GLYPH_DELAY = 12
+
+local Theme = {
+	-- Surfaces used to sit within a few RGB points of each other, so the window,
+	-- the panels and the cards read as one flat black rectangle. Each layer now
+	-- steps up in grey, which is what gives the reference its stacked look.
+	Background = Color3.fromRGB(12, 10, 6),
+	Surface = Color3.fromRGB( 30, 22, 10),
+	SurfaceHover = Color3.fromRGB(52, 39, 16),
+	Selected = Color3.fromRGB(91, 66, 20),
+	-- Borders read as a light tint at high transparency rather than a solid grey
+	-- line, which is what separates an inset hairline from a drawn outline.
+	Border = Color3.fromRGB(218, 169, 65),
+	Divider = Color3.fromRGB(111, 82, 30),
+	Text = Color3.fromRGB(255, 247, 220),
+	MutedText = Color3.fromRGB(211, 185, 124),
+	FaintText = Color3.fromRGB(151, 119, 55),
+	Accent = Color3.fromRGB(255, 198, 66),
+	AccentSoft = Color3.fromRGB(239, 207, 126),
+	Track = Color3.fromRGB(91, 69, 29),
+	-- Only non-monochrome value in the theme: close is the one destructive
+	-- control, so its hover plate is the single place colour carries meaning.
+	Danger = Color3.fromRGB(135, 75, 20),
+	Shadow = Color3.fromRGB(0, 0, 0),
+	White = Color3.fromRGB(255, 255, 255),
+	Black = Color3.fromRGB(0, 0, 0),
+	Fonts = Fonts,
+}
+
+-- Parent is applied last so an instance is never shown with half of its
+-- properties assigned (pairs() order is undefined), which caused a one frame
+-- flicker and an extra layout pass for every created object.
+local function create(className: string, properties: {[string]: any}?, children: {Instance}?): Instance
+	local object = Instance.new(className)
+	-- Roblox's automatic localization rewrites GUI text whenever the client's
+	-- language differs from the experience's, and it does not know that these
+	-- strings are control names: a dropdown offering "Head" rendered as "Kafa" on
+	-- a Turkish client while the value behind it stayed "Head". Library text is
+	-- part of the API surface, so it opts out.
+	if object:IsA("GuiBase2d") then
+		(object :: any).AutoLocalize = false
+	end
+	local parent: Instance? = nil
+	for property, value in pairs(properties or {}) do
+		if property == "Parent" then
+			parent = value
+		else
+			(object :: any)[property] = value
+		end
+	end
+	for _, child in ipairs(children or {}) do
+		child.Parent = object
+	end
+	if parent then
+		object.Parent = parent
+	end
+	return object
+end
+
+-- Engine capabilities that are not present on every client. UIStroke's border
+-- positioning shipped 2025-12-04 and UIShadow 2026-06-23, so both are probed
+-- once instead of assumed.
+local Supports = {
+	InnerStroke = (function(): boolean
+		local ok = pcall(function()
+			local probe = Instance.new("UIStroke")
+			probe.BorderStrokePosition = Enum.BorderStrokePosition.Inner
+			probe:Destroy()
+		end)
+		return ok
+	end)(),
+	Shadow = (function(): boolean
+		local ok = pcall(function()
+			Instance.new("UIShadow"):Destroy()
+		end)
+		return ok
+	end)(),
+}
+
+local function corner(radius: number): UICorner
+	return create("UICorner", { CornerRadius = UDim.new(0, radius) }) :: UICorner
+end
+
+-- Native drop shadow. Returns nil on clients without UIShadow so callers can
+-- fall back. Roblox recommends staying under 100 shadows on screen.
+local function dropShadow(parent: GuiObject, blur: number, spread: number, transparency: number, offsetY: number): Instance?
+	if not Supports.Shadow then
+		return nil
+	end
+	return create("UIShadow", {
+		BlurRadius = UDim.new(0, blur),
+		Spread = UDim2.fromOffset(spread, spread),
+		Offset = UDim2.fromOffset(0, offsetY),
+		Color = Theme.Shadow,
+		Transparency = transparency,
+		Parent = parent,
+	})
+end
+
+-- `lit` gives the stroke a top-to-bottom transparency ramp so the border catches
+-- light along the upper edge and fades out at the bottom. UIStroke only shows a
+-- child UIGradient's colour when its own Color is white, hence the swap.
+local function stroke(color: Color3?, transparency: number?, lit: boolean?): UIStroke
+	local base = color or Theme.Border
+	local alpha = transparency or 0
+	local instance = create("UIStroke", {
+		Color = lit and Theme.White or base,
+		Thickness = 1,
+		Transparency = lit and 0 or alpha,
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+	}) :: UIStroke
+
+	-- Default BorderStrokePosition is Outer, which draws the hairline outside the
+	-- rounded shape and reads as a hard outline instead of an inset edge.
+	if Supports.InnerStroke then
+		instance.BorderStrokePosition = Enum.BorderStrokePosition.Inner
+	end
+
+	if lit then
+		create("UIGradient", {
+			Rotation = 90,
+			Color = ColorSequence.new(base, base),
+			Transparency = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, alpha),
+				NumberSequenceKeypoint.new(0.55, math.clamp(alpha + 0.18, 0, 1)),
+				NumberSequenceKeypoint.new(1, math.clamp(alpha + 0.3, 0, 1)),
+			}),
+			Parent = instance,
+		})
+	end
+
+	return instance
+end
+
+local function padding(top: number, right: number, bottom: number, left: number): UIPadding
+	return create("UIPadding", {
+		PaddingTop = UDim.new(0, top),
+		PaddingRight = UDim.new(0, right),
+		PaddingBottom = UDim.new(0, bottom),
+		PaddingLeft = UDim.new(0, left),
+	}) :: UIPadding
+end
+
+local function listLayout(paddingAmount: number): UIListLayout
+	return create("UIListLayout", {
+		Padding = UDim.new(0, paddingAmount),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		HorizontalAlignment = Enum.HorizontalAlignment.Left,
+	}) :: UIListLayout
+end
+
+local function gradient(topColor: Color3, bottomColor: Color3, rotation: number?): UIGradient
+	return create("UIGradient", {
+		Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, topColor),
+			ColorSequenceKeypoint.new(1, bottomColor),
+		}),
+		Rotation = rotation or 90,
+	}) :: UIGradient
+end
+
+-- `y` is either an offset from the top of `parent`, or a UDim so the caller can
+-- anchor to the bottom edge. The content divider used to be placed at the design
+-- canvas height minus a constant, which drifted the moment a window was created
+-- with a custom Size.
+--
+-- This used to draw a row of separate dash frames. A dash row is a stack of
+-- bright fragments rather than a line: at these widths it produced 40+ instances
+-- per divider, and each fragment read as a speck instead of a rule. One grey
+-- frame states the same separation and costs one instance.
+local function separatorLine(parent: Instance, y: number | UDim, left: number, right: number)
+	local offsetY: UDim = if typeof(y) == "UDim" then y else UDim.new(0, y :: number)
+	return create("Frame", {
+		Name = "Divider",
+		AnchorPoint = Vector2.new(0, offsetY.Scale),
+		Position = UDim2.new(0, left, offsetY.Scale, offsetY.Offset),
+		Size = UDim2.new(1, -(left + right), 0, 1),
+		BackgroundColor3 = Theme.Divider,
+		BackgroundTransparency = 0,
+		BorderSizePixel = 0,
+		LayoutOrder = 1,
+		Parent = parent,
+	}) :: Frame
+end
+
+-- One PreloadAsync per icon opened ~60 separate requests, and ContentProvider
+-- starved the ones queued last: the final tab's rows never resolved. Everything
+-- created in the same frame is fetched as a single batched request instead.
+local preloadQueue: {Instance} = {}
+local preloadRunning = false
+-- One line per failing asset instead of one per element that references it.
+local warnedAssets: {[string]: boolean} = {}
+
+local preloadCallbacks: {() -> ()} = {}
+
+-- What the engine itself said about each asset, keyed by content id. This is the
+-- only authoritative answer to "did the picture arrive": PreloadAsync reports a
+-- per-asset AssetFetchStatus through its callback whether or not the label ever
+-- rendered, whether or not IsLoaded flips, and whether or not ContentImageSize
+-- exists on the client. Everything else in this file is a guess next to it.
+local assetFetchStatus: {[string]: EnumItem} = {}
+
+local function fetchStatusSaysLoaded(imageId: string): boolean
+	local status = assetFetchStatus[imageId]
+	return status ~= nil and status == Enum.AssetFetchStatus.Success
+end
+
+-- PreloadAsync only returns once every asset in the batch has settled, so its
+-- completion is the reliable signal for "this image is done". ImageLabel.IsLoaded
+-- does not dependably raise a property changed event, which left glyph fallbacks
+-- drawn on top of images that had in fact arrived.
+local function queuePreload(instance: Instance, onSettled: () -> ())
+	table.insert(preloadQueue, instance)
+	table.insert(preloadCallbacks, onSettled)
+	if preloadRunning then
+		return
+	end
+	preloadRunning = true
+	task.defer(function()
+		while #preloadQueue > 0 do
+			local batch = preloadQueue
+			local callbacks = preloadCallbacks
+			preloadQueue = {}
+			preloadCallbacks = {}
+			-- The two-argument call reports each asset as it settles. Older clients
+			-- reject the callback, so a plain PreloadAsync is the fallback and the
+			-- status table simply stays empty there.
+			local reported = pcall(function()
+				ContentProvider:PreloadAsync(batch, function(contentId, status)
+					if type(contentId) == "string" then
+						assetFetchStatus[contentId] = status
+					end
+				end)
+			end)
+			if not reported then
+				pcall(function()
+					ContentProvider:PreloadAsync(batch)
+				end)
+			end
+			for _, callback in ipairs(callbacks) do
+				pcall(callback)
+			end
+		end
+		preloadRunning = false
+	end)
+end
+
+-- A window with four tabs creates ~60 icons. Giving each one its own polling
+-- coroutine meant 60 threads waking twice a second for the entire session, and
+-- none of them noticed a destroyed window until their next tick. One shared
+-- watcher walks the pending list instead, and drops entries whose image has
+-- loaded or been destroyed.
+type FallbackEntry = {
+	Image: ImageLabel,
+	Fallback: TextLabel,
+	Id: string,
+	Start: number,
+}
+
+local pendingFallbacks: {FallbackEntry} = {}
+local fallbackWatcherRunning = false
+
+-- Roblox does not download an image for a GUI that is not on screen, so an icon
+-- on an unselected tab reports IsLoaded = false indefinitely and nothing about
+-- that is a failure. The countdown to the glyph therefore only runs while the
+-- label is actually being rendered.
+local function isRendered(element: GuiObject): boolean
+	local current: Instance? = element
+	while current and not current:IsA("ScreenGui") do
+		if current:IsA("GuiObject") and not current.Visible then
+			return false
+		end
+		current = current.Parent
+	end
+	if current and current:IsA("ScreenGui") and not current.Enabled then
+		return false
+	end
+	return current ~= nil
+end
+
+-- Whether an image actually has pixels, which is not the same question as
+-- IsLoaded. Images that draw perfectly have been seen reporting IsLoaded = false
+-- for a whole session under some clients, and the watcher below took that as
+-- proof the asset had failed: after the delay it painted the fallback glyph over
+-- a fully rendered icon and never took it away again — the grey "^" sitting
+-- between the peek cat's eyes. ContentImageSize is filled in from the decoded
+-- image, so a non-zero size means the picture arrived whatever IsLoaded claims.
+-- Read through pcall: the property is missing on older clients, where this simply
+-- falls back to IsLoaded alone.
+local function imageHasContent(image: ImageLabel): boolean
+	if image.IsLoaded then
+		return true
+	end
+	-- What ContentProvider reported for this exact asset, which is settled long
+	-- before any of the guesses below can tell one state from another.
+	if fetchStatusSaysLoaded(image.Image) then
+		return true
+	end
+	local ok, size = pcall(function()
+		return image.ContentImageSize
+	end)
+	return ok and typeof(size) == "Vector2" and size.Magnitude > 0
+end
+
+-- How long a glyph may stay on screen before it is withdrawn for good. The glyph
+-- is a diagnostic, and a diagnostic that is wrong is worse than none: the console
+-- warning has already been written by then, so nothing is lost by clearing the
+-- speck off the interface.
+local FALLBACK_GLYPH_GIVE_UP = 30
+
+local function runFallbackWatcher()
+	if fallbackWatcherRunning then
+		return
+	end
+	fallbackWatcherRunning = true
+	task.spawn(function()
+		while #pendingFallbacks > 0 do
+			local now = os.clock()
+			-- Backwards so removal does not skip the next entry.
+			for index = #pendingFallbacks, 1, -1 do
+				local entry = pendingFallbacks[index]
+				local image = entry.Image
+				local done = false
+
+				if not image.Parent then
+					done = true
+				elseif imageHasContent(image) then
+					if entry.Fallback.Parent then
+						entry.Fallback.Visible = false
+					end
+					done = true
+				elseif not isRendered(image) then
+					-- Off screen: hide any glyph already shown and restart the clock, so
+					-- switching to a tab gives its icons a full fetch window instead of
+					-- inheriting an expired one.
+					if entry.Fallback.Parent and entry.Fallback.Visible then
+						entry.Fallback.Visible = false
+					end
+					entry.Start = now
+				else
+					local elapsed = now - entry.Start
+					if elapsed > FALLBACK_GLYPH_DELAY then
+						if entry.Fallback.Parent and not entry.Fallback.Visible then
+							entry.Fallback.Visible = true
+						end
+						if not warnedAssets[entry.Id] then
+							warnedAssets[entry.Id] = true
+							warn(
+								"[CATHUB GUI LIB] Image asset still not loaded after",
+								FALLBACK_GLYPH_DELAY .. "s:",
+								entry.Id,
+								"Check moderation and Asset Privacy/Open Use permissions."
+							)
+						end
+					end
+					-- Dropping the entry while the glyph is still SHOWING is what left a
+					-- speck painted over an icon that arrived late, so the deadline
+					-- takes the glyph away before it lets the entry go. Past this point
+					-- the signal has been unreadable for half a minute on a rendered
+					-- image, which says more about the signal than about the asset.
+					if elapsed > FALLBACK_GLYPH_GIVE_UP then
+						if entry.Fallback.Parent then
+							entry.Fallback.Visible = false
+						end
+						done = true
+					end
+				end
+
+				if done then
+					table.remove(pendingFallbacks, index)
+				end
+			end
+			-- One second is well inside the delay before a glyph appears, and the list
+			-- empties itself as images resolve, so the steady state is no thread at all.
+			task.wait(1)
+		end
+		fallbackWatcherRunning = false
+	end)
+end
+
+local function watchFallback(image: ImageLabel, fallback: TextLabel, imageId: string)
+	table.insert(pendingFallbacks, {
+		Image = image,
+		Fallback = fallback,
+		Id = imageId,
+		Start = os.clock(),
+	})
+	runFallbackWatcher()
+end
+
+local function imageOrGlyph(parent: Instance, sourceProperties: {[string]: any}, imageId: string?, glyph: string): GuiObject
+	-- Work on a copy: the branches below strip keys, and mutating the caller's
+	-- table breaks any table that is reused for a second element.
+	local properties: {[string]: any} = {}
+	for key, value in pairs(sourceProperties) do
+		properties[key] = value
+	end
+
+	if imageId and imageId ~= "" then
+		local fallbackProperties = {
+			Name = (properties.Name or "Image") .. "Fallback",
+			AnchorPoint = properties.AnchorPoint or Vector2.zero,
+			Position = properties.Position or UDim2.fromOffset(0, 0),
+			Size = properties.Size or UDim2.fromScale(1, 1),
+			Rotation = properties.Rotation or 0,
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			FontFace = Fonts.Display,
+			Text = glyph,
+			TextColor3 = Theme.FaintText,
+			TextTransparency = properties.TextTransparency or 0,
+			TextSize = properties.TextSize or 18,
+			TextXAlignment = properties.TextXAlignment or Enum.TextXAlignment.Center,
+			TextYAlignment = properties.TextYAlignment or Enum.TextYAlignment.Center,
+			Visible = false,
+			ZIndex = properties.ZIndex or 1,
+			Parent = parent,
+		}
+		properties.TextTransparency = nil
+		properties.TextSize = nil
+		properties.TextXAlignment = nil
+		properties.TextYAlignment = nil
+		properties.TextColor3 = nil
+		properties.FontFace = nil
+		properties.TextWrapped = nil
+		properties.Image = imageId
+		properties.ScaleType = properties.ScaleType or Enum.ScaleType.Fit
+		properties.BackgroundTransparency = 1
+		properties.Parent = parent
+		-- UIScale grows a label away from its AnchorPoint, and these labels are
+		-- laid out from their top left corner: scaling in place pushed each icon
+		-- down and to the right of the slot it belongs to. Re-anchor to the
+		-- centre of the same slot first, so the extra size spreads evenly and the
+		-- layout box stays where the caller put it.
+		local assetScale = KittenHub.AssetScales[imageId]
+		if assetScale then
+			local size = properties.Size or UDim2.fromScale(1, 1)
+			local position = properties.Position or UDim2.fromOffset(0, 0)
+			local anchor = properties.AnchorPoint or Vector2.zero
+			properties.AnchorPoint = Vector2.new(0.5, 0.5)
+			properties.Position = UDim2.new(
+				position.X.Scale + size.X.Scale * (0.5 - anchor.X),
+				position.X.Offset + size.X.Offset * (0.5 - anchor.X),
+				position.Y.Scale + size.Y.Scale * (0.5 - anchor.Y),
+				position.Y.Offset + size.Y.Offset * (0.5 - anchor.Y)
+			)
+		end
+
+		local image = create("ImageLabel", properties) :: ImageLabel
+		if assetScale then
+			create("UIScale", { Scale = assetScale, Parent = image })
+		end
+		-- A caller that passes no glyph wants the icon or nothing at all. Building
+		-- the fallback anyway put a stray character on screen for as long as the
+		-- asset took to arrive, and the sidebar peek arrow was exactly that: an
+		-- empty-looking control that flashed a grey caret on every open.
+		if glyph and glyph ~= "" then
+			local fallback = create("TextLabel", fallbackProperties) :: TextLabel
+
+			-- The ImageLabel is never hidden. Roblox only downloads an image once
+			-- the label actually renders, so setting Visible = false while
+			-- IsLoaded was still false deadlocked it: invisible, therefore never
+			-- fetched, therefore never loaded. An unloaded label simply draws
+			-- nothing, so toggling the glyph behind it is enough.
+			-- Roblox does not download an image for a GUI that never renders, so an
+			-- icon on an unselected tab reports IsLoaded = false long after
+			-- PreloadAsync has returned for it. Revealing the glyph on that signal
+			-- painted grey specks over every tab the user had not opened yet. The
+			-- glyph is therefore only shown once an asset has stayed unloaded well
+			-- past any normal fetch, and is always withdrawn the moment the image
+			-- does arrive. IsLoaded does not dependably raise a changed event
+			-- either, hence the poll alongside it.
+			local function hideFallbackIfLoaded()
+				if fallback.Parent and imageHasContent(image) then
+					fallback.Visible = false
+				end
+			end
+			image:GetPropertyChangedSignal("IsLoaded"):Connect(hideFallbackIfLoaded)
+			queuePreload(image, hideFallbackIfLoaded)
+			watchFallback(image, fallback, imageId)
+		end
+		return image
+	end
+	properties.ImageTransparency = nil
+	properties.ImageColor3 = nil
+	properties.ScaleType = nil
+	properties.BackgroundTransparency = 1
+	properties.BorderSizePixel = 0
+	properties.FontFace = Fonts.Display
+	properties.Text = glyph
+	properties.TextColor3 = Theme.FaintText
+	properties.TextTransparency = properties.TextTransparency or 0
+	properties.Parent = parent
+	return create("TextLabel", properties) :: TextLabel
+end
+
+local function spriteOrGlyph(parent: Instance, properties: {[string]: any}, assets: {[string]: any}, role: string, glyph: string): GuiObject
+	local direct = assets[role]
+	if not direct and role == "Logo" then
+		direct = assets.Logo or assets.RowIcon
+	elseif not direct and role == "Curled" then
+		direct = assets.RowIcon
+	elseif not direct and role == "Sleeping" then
+		direct = assets.CornerCat
+	end
+	return imageOrGlyph(parent, properties, direct, glyph)
+end
+
+local function addSoftPattern(parent: Instance, assets: {[string]: any})
+	-- Kept below the upper third and faint. The old set put marks at y 0.12 and
+	-- 0.16, right where page titles and section headers sit, so they read as
+	-- specks stuck to the headings rather than as background texture.
+	local marks = {
+		{0.10, 0.63, 20, 0.93}, {0.31, 0.87, 16, 0.94}, {0.55, 0.74, 22, 0.93},
+		{0.86, 0.66, 18, 0.94}, {0.93, 0.91, 14, 0.95},
+	}
+	for index, mark in ipairs(marks) do
+		local item = spriteOrGlyph(parent, {
+			Name = "Pattern" .. index,
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.fromScale(mark[1], mark[2]),
+			Size = UDim2.fromOffset(mark[3], mark[3]),
+			ImageTransparency = mark[4],
+			TextTransparency = mark[4],
+			TextSize = mark[3],
+			ZIndex = 1,
+		}, assets, "Paw", "✦")
+		item.Rotation = (index % 2 == 0) and 12 or -10
+	end
+end
+
+local function label(properties: {[string]: any}): TextLabel
+	local defaults = {
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		FontFace = Fonts.Body,
+		TextColor3 = Theme.Text,
+		TextSize = 15,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextYAlignment = Enum.TextYAlignment.Center,
+	}
+	for key, value in pairs(properties) do
+		defaults[key] = value
+	end
+	return create("TextLabel", defaults) :: TextLabel
+end
+
+local function button(properties: {[string]: any}, children: {Instance}?): TextButton
+	local defaults = {
+		AutoButtonColor = false,
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		FontFace = Fonts.Body,
+		Text = "",
+		TextColor3 = Theme.Text,
+		TextSize = 15,
+	}
+	for key, value in pairs(properties) do
+		defaults[key] = value
+	end
+	return create("TextButton", defaults, children) :: TextButton
+end
+
+-- Number of decimals written by the increment itself, used to scrub the binary
+-- float residue out of a snapped slider value (0.1 + 0.2 prints as
+-- 0.30000000000000004 otherwise). Reading it off tostring keeps 0.25 at two
+-- decimals, which a log10-based guess rounds down to 0.3.
+local function decimalPlaces(value: number): number
+	local text = tostring(value)
+	if string.find(text, "e", 1, true) or string.find(text, "inf", 1, true) then
+		return 0
+	end
+	local point = string.find(text, ".", 1, true)
+	if not point then
+		return 0
+	end
+	return #text - point
+end
+
+-- Steps are counted from `minimum`, not from zero: a 5..105 slider with a step of
+-- 10 must land on 5, 15, 25 and never on 10.
+local function snapToIncrement(value: number, minimum: number, increment: number): number
+	if increment <= 0 then
+		return value
+	end
+	local steps = math.floor(((value - minimum) / increment) + 0.5)
+	local snapped = minimum + (steps * increment)
+	local places = math.max(decimalPlaces(increment), decimalPlaces(minimum))
+	if places > 0 then
+		return tonumber(string.format("%." .. places .. "f", snapped)) or snapped
+	end
+	return snapped
+end
+
+local function tween(instance: Instance, duration: number, properties: {[string]: any})
+	TweenService:Create(instance, TweenInfo.new(duration, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), properties):Play()
+end
+
+local function safeCallback(callback: ((...any) -> ())?, ...: any)
+	if not callback then
+		return
+	end
+	task.spawn(function(...)
+		local ok, message = pcall(callback :: any, ...)
+		if not ok then
+			warn("[CATHUB GUI LIB] Callback error:", message)
+		end
+	end, ...)
+end
+
+local function getParent(): Instance
+	local ok, hiddenUi = pcall(function()
+		if typeof(gethui) == "function" then
+			return gethui()
+		end
+		return nil
+	end)
+	if ok and hiddenUi then
+		return hiddenUi
+	end
+	return game:GetService("CoreGui")
+end
+
+local function isPressInput(input: InputObject): boolean
+	return input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch
+end
+
+local function isMoveInput(input: InputObject): boolean
+	return input.UserInputType == Enum.UserInputType.MouseMovement
+		or input.UserInputType == Enum.UserInputType.Touch
+end
+
+-- Every control used to open its own global UserInputService connection, so a
+-- window with ten sliders ran ten callbacks per mouse move. Each window now owns
+-- exactly three connections and fans them out to the registered handlers.
+local function fireInputHandlers(handlers: {(InputObject, boolean) -> ()}, input: InputObject, processed: boolean)
+	for _, handler in ipairs(handlers) do
+		local ok, message = pcall(handler, input, processed)
+		if not ok then
+			warn("[CATHUB GUI LIB] Input handler error:", message)
+		end
+	end
+end
+
+local function disconnectAll(connections: {RBXScriptConnection})
+	for _, connection in ipairs(connections) do
+		if connection.Connected then
+			connection:Disconnect()
+		end
+	end
+	table.clear(connections)
+end
+
+local WindowMethods = {}
+WindowMethods.__index = WindowMethods
+
+local TabMethods = {}
+TabMethods.__index = TabMethods
+
+local SectionMethods = {}
+SectionMethods.__index = SectionMethods
+
+local function makeDraggable(window: any, handle: GuiObject, target: GuiObject)
+	local dragging = false
+	local dragStart = Vector2.zero
+	local startPosition = target.Position
+	local shadowStart = window._shadow and window._shadow.Position or nil
+
+	table.insert(window._connections, handle.InputBegan:Connect(function(input)
+		if isPressInput(input) then
+			dragging = true
+			dragStart = input.Position
+			startPosition = target.Position
+			shadowStart = window._shadow and window._shadow.Position or nil
+		end
+	end))
+
+	table.insert(window._inputEnded, function(input)
+		if isPressInput(input) then
+			dragging = false
+		end
+	end)
+
+	table.insert(window._inputChanged, function(input)
+		if not dragging or not isMoveInput(input) then
+			return
+		end
+		local delta = input.Position - dragStart
+		target.Position = UDim2.new(
+			startPosition.X.Scale,
+			startPosition.X.Offset + delta.X,
+			startPosition.Y.Scale,
+			startPosition.Y.Offset + delta.Y
+		)
+		if window._shadow and shadowStart then
+			window._shadow.Position = UDim2.new(
+				shadowStart.X.Scale,
+				shadowStart.X.Offset + delta.X,
+				shadowStart.Y.Scale,
+				shadowStart.Y.Offset + delta.Y
+			)
+		end
+	end)
+end
+
+local function updateResponsiveScale(window: any)
+	local camera = workspace.CurrentCamera
+	if not camera then
+		return
+	end
+	local viewport = camera.ViewportSize
+	local usableWidth = math.max(viewport.X - 40, 320)
+	local usableHeight = math.max(viewport.Y - 40, 240)
+	-- 1280x760 is the design canvas; UIScale preserves the composition on smaller viewports.
+	local scale = math.min(window._designScale, usableWidth / window._baseSize.X, usableHeight / window._baseSize.Y)
+	window._uiScale.Scale = math.clamp(scale, 0.48, 1)
+	if window._shadow then
+		window._shadow.Size = UDim2.fromOffset((window._baseSize.X + 18) * scale, (window._baseSize.Y + 18) * scale)
+	end
+	-- Overlay popups are positioned in absolute screen space, so a resize
+	-- invalidates them.
+	window:ClosePopups()
+end
+
+function KittenHub:CreateWindow(options: {[string]: any}?)
+	options = options or {}
+	local baseSize = options.Size or Vector2.new(1280, 760)
+	local designScale = options.Scale or 0.78
+	local title = options.Title or "CATHUB GUI LIB"
+	local toggleKey = options.ToggleKey or Enum.KeyCode.RightShift
+	local assets = options.Assets or {}
+	assets.Logo = assets.Logo or options.Icon or KittenHub.DefaultAssets.Logo
+	-- Fill in every role the caller left out. Listing them one by one meant a new
+	-- default asset was silently unavailable until this block was edited too.
+	for role, id in pairs(KittenHub.DefaultAssets) do
+		if assets[role] == nil then
+			assets[role] = id
+		end
+	end
+	assets.RowIcon = assets.RowIcon or assets.Logo
+
+	local existing = getParent():FindFirstChild("CATHUBGui")
+	if existing then
+		existing:Destroy()
+	end
+
+	local screenGui = create("ScreenGui", {
+		Name = "CATHUBGui",
+		DisplayOrder = 999,
+		IgnoreGuiInset = true,
+		ResetOnSpawn = false,
+		ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+		Parent = getParent(),
+	}) :: ScreenGui
+
+	-- Without native UIShadow the fallback is a hard-edged rounded rectangle
+	-- behind the window, which reads as a grey slab rather than a shadow. Only
+	-- create it when the engine cannot draw a real one.
+	local shadow: Frame? = nil
+	if not Supports.Shadow then
+		shadow = create("Frame", {
+			Name = "WindowShadow",
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.new(0.5, 0, 0.5, 8),
+			Size = UDim2.fromOffset(baseSize.X + 18, baseSize.Y + 18),
+			BackgroundColor3 = Theme.Shadow,
+			BackgroundTransparency = 0.6,
+			BorderSizePixel = 0,
+			Parent = screenGui,
+		}, { corner(24) }) :: Frame
+	end
+
+	local root = create("Frame", {
+		Name = "Window",
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(baseSize.X, baseSize.Y),
+		BackgroundColor3 = Theme.Background,
+		BorderSizePixel = 0,
+		ClipsDescendants = true,
+		Parent = screenGui,
+	}, {
+		corner(18),
+		stroke(Theme.Border, Line.Window, true),
+		gradient(Color3.fromRGB(35, 25, 9), Color3.fromRGB(12, 10, 6), 115),
+	}) :: Frame
+	dropShadow(root, 54, 6, 0.34, 14)
+	addSoftPattern(root, assets)
+
+	-- Subtle autumn leaf animation. Leaves drift down behind the interface and
+	-- are recreated while the window exists; the layer does not intercept input.
+	local leafLayer = create("Frame", {
+		Name = "GoldenAutumnLeaves",
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		ClipsDescendants = true,
+		ZIndex = 1,
+		Parent = root,
+	}) :: Frame
+
+	local leafSymbols = { "🍂", "🍁", "🍃" }
+	local leafRandom = Random.new()
+	for leafIndex = 1, 9 do
+		local leaf = create("TextLabel", {
+			Name = "FallingLeaf" .. leafIndex,
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.new(leafRandom:NextNumber(0, 1), 0, leafRandom:NextNumber(-1.2, -0.1), 0),
+			Size = UDim2.fromOffset(22, 22),
+			BackgroundTransparency = 1,
+			Text = leafSymbols[leafRandom:NextInteger(1, #leafSymbols)],
+			TextSize = leafRandom:NextInteger(13, 21),
+			TextTransparency = 0.22,
+			Rotation = leafRandom:NextInteger(-35, 35),
+			ZIndex = 1,
+			Parent = leafLayer,
+		}) :: TextLabel
+
+		task.spawn(function()
+			while root.Parent and leaf.Parent do
+				local duration = leafRandom:NextNumber(7, 13)
+				leaf.Position = UDim2.new(leafRandom:NextNumber(0.02, 0.98), 0, -0.08, 0)
+				leaf.Rotation = leafRandom:NextInteger(-35, 35)
+				leaf.TextTransparency = 0.22
+				local drift = leafRandom:NextNumber(-0.12, 0.12)
+				local tween = TweenService:Create(leaf, TweenInfo.new(duration, Enum.EasingStyle.Linear), {
+					Position = UDim2.new(math.clamp(leaf.Position.X.Scale + drift, 0, 1), 0, 1.12, 0),
+					Rotation = leaf.Rotation + leafRandom:NextInteger(100, 260),
+					TextTransparency = 0.48,
+				})
+				tween:Play()
+				tween.Completed:Wait()
+			end
+		end)
+	end
+
+	local uiScale = create("UIScale", { Scale = 1, Parent = root }) :: UIScale
+
+	local topbar = create("Frame", {
+		Name = "Topbar",
+		Size = UDim2.new(1, 0, 0, 94),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Parent = root,
+	}) :: Frame
+
+	create("Frame", {
+		Name = "TopDivider",
+		AnchorPoint = Vector2.new(0, 1),
+		Position = UDim2.new(0, 306, 1, 0),
+		Size = UDim2.new(1, -320, 0, 1),
+		BackgroundColor3 = Theme.Divider,
+		BorderSizePixel = 0,
+		Parent = topbar,
+	})
+
+	local brand = create("Frame", {
+		Name = "Brand",
+		Size = UDim2.fromOffset(306, 94),
+		BackgroundTransparency = 1,
+		Parent = topbar,
+	}) :: Frame
+
+	spriteOrGlyph(brand, {
+		Name = "CATHUBIcon",
+		Position = UDim2.fromOffset(24, 22),
+		Size = UDim2.fromOffset(52, 52),
+		ImageTransparency = 0,
+		TextTransparency = 0,
+		TextSize = 28,
+	}, assets, "Logo", "✦")
+
+	label({
+		Name = "Title",
+		Position = UDim2.fromOffset(86, 0),
+		Size = UDim2.new(1, -98, 1, 0),
+		FontFace = Fonts.Display,
+		Text = title,
+		TextSize = 34,
+		Parent = brand,
+	})
+	-- The paw sat at x 264..296 and the sparkles at x 258..294, so the two drew on
+	-- top of each other. The sparkles move up to the corner above the logo, which
+	-- is where the reference art places them.
+	spriteOrGlyph(brand, {
+		Name = "BrandPaw",
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -12, 0.5, 2),
+		Size = UDim2.fromOffset(30, 30),
+		TextSize = 21,
+		ImageTransparency = 0.08,
+		TextTransparency = 0.08,
+	}, assets, "Paw", "✦")
+	spriteOrGlyph(brand, {
+		Name = "BrandSparkles",
+		Position = UDim2.fromOffset(12, 6),
+		Size = UDim2.fromOffset(26, 22),
+		ImageTransparency = 0.12,
+		TextTransparency = 0.12,
+		TextSize = 17,
+		ZIndex = 5,
+	}, assets, "Sparkles", "✧")
+
+	local windowControls = create("Frame", {
+		Name = "WindowControls",
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -12, 0, 0),
+		Size = UDim2.fromOffset(132, 94),
+		BackgroundTransparency = 1,
+		Parent = topbar,
+	}) :: Frame
+
+	create("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal,
+		HorizontalAlignment = Enum.HorizontalAlignment.Right,
+		VerticalAlignment = Enum.VerticalAlignment.Center,
+		-- Without this the layout falls back to sorting by Name, which ordered the
+		-- controls alphabetically as Center, Close, Minimize.
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		Padding = UDim.new(0, 4),
+		Parent = windowControls,
+	})
+
+	-- Window controls are drawn from primitives instead of "—", "□" and "×" text
+	-- glyphs: font glyphs sit on different baselines, so the three never lined up
+	-- and their weights did not match. Each is a hit target with a hover plate
+	-- behind a hairline-thin icon.
+	local minimize, maximize, close
+	local controlParts: {{ Plate: Frame, Icon: Frame, Danger: boolean }} = {}
+	do
+		local function controlButton(name: string, order: number, danger: boolean?)
+			local hit = button({
+				Name = name,
+				Size = UDim2.fromOffset(34, 34),
+				BackgroundTransparency = 1,
+				Text = "",
+				LayoutOrder = order,
+				Parent = windowControls,
+			}, { corner(10) })
+
+			local plate = create("Frame", {
+				Name = "Plate",
+				Size = UDim2.fromScale(1, 1),
+				BackgroundColor3 = danger and Theme.Danger or Theme.SurfaceHover,
+				BackgroundTransparency = 1,
+				BorderSizePixel = 0,
+				Parent = hit,
+			}, { corner(10) }) :: Frame
+
+			local icon = create("Frame", {
+				Name = "Icon",
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				Position = UDim2.fromScale(0.5, 0.5),
+				Size = UDim2.fromOffset(12, 12),
+				BackgroundTransparency = 1,
+				BorderSizePixel = 0,
+				Parent = hit,
+			}) :: Frame
+
+			table.insert(controlParts, { Plate = plate, Icon = icon, Danger = danger == true })
+			return hit, plate, icon
+		end
+
+		local function bar(parent: Instance, position: UDim2, size: UDim2, rotation: number?)
+			return create("Frame", {
+				Position = position,
+				Size = size,
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				Rotation = rotation or 0,
+				BackgroundColor3 = Theme.MutedText,
+				BorderSizePixel = 0,
+				Parent = parent,
+			}, { corner(1) }) :: Frame
+		end
+
+		local minimizeIcon, maximizeIcon, closeIcon
+		minimize, _, minimizeIcon = controlButton("Minimize", 1)
+		bar(minimizeIcon, UDim2.fromScale(0.5, 0.5), UDim2.fromOffset(12, 2))
+
+		maximize, _, maximizeIcon = controlButton("Center", 2)
+		create("Frame", {
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.fromScale(0.5, 0.5),
+			Size = UDim2.fromOffset(11, 11),
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			Parent = maximizeIcon,
+		}, { corner(3), stroke(Theme.MutedText, 0) })
+
+		close, _, closeIcon = controlButton("Close", 3, true)
+		bar(closeIcon, UDim2.fromScale(0.5, 0.5), UDim2.fromOffset(13, 2), 45)
+		bar(closeIcon, UDim2.fromScale(0.5, 0.5), UDim2.fromOffset(13, 2), -45)
+	end
+
+	local sidebar = create("Frame", {
+		Name = "Sidebar",
+		Position = UDim2.fromOffset(14, 164),
+		Size = UDim2.new(0, 276, 1, -178),
+		BackgroundColor3 = Theme.Surface,
+		BorderSizePixel = 0,
+		Parent = root,
+	}, {
+		corner(20),
+		stroke(Theme.Border, Line.Panel, true),
+		gradient(Color3.fromRGB(65, 47, 17), Color3.fromRGB(25, 18, 8), 110),
+	}) :: Frame
+	dropShadow(sidebar, 26, 0, 0.55, 8)
+	addSoftPattern(sidebar, assets)
+	spriteOrGlyph(root, {
+		Name = "SidebarPeek",
+		AnchorPoint = Vector2.new(0.5, 1),
+		Position = UDim2.fromOffset(152, 170),
+		Size = UDim2.fromOffset(150, 88),
+		TextSize = 30,
+		ImageTransparency = 0,
+		TextTransparency = 0,
+		ZIndex = 5,
+	}, assets, "Peek", "")
+
+	create("Frame", {
+		Name = "SidebarDivider",
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.fromScale(1, 0),
+		Size = UDim2.new(0, 1, 1, 0),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Parent = sidebar,
+	})
+
+	local tabList = create("ScrollingFrame", {
+		Name = "TabList",
+		Position = UDim2.fromOffset(12, 30),
+		Size = UDim2.new(1, -24, 1, -150),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		ScrollBarThickness = 2,
+		ScrollBarImageColor3 = Theme.Border,
+		CanvasSize = UDim2.fromOffset(0, 0),
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		Parent = sidebar,
+	}, { listLayout(7), padding(0, 3, 0, 3) }) :: ScrollingFrame
+
+	local footer = create("Frame", {
+		Name = "Footer",
+		AnchorPoint = Vector2.new(0, 1),
+		Position = UDim2.new(0, 12, 1, -12),
+		Size = UDim2.new(1, -24, 0, 86),
+		BackgroundColor3 = Theme.SurfaceHover,
+		BorderSizePixel = 0,
+		Parent = sidebar,
+	}, { corner(17), stroke(Theme.Border, Line.Panel, true) }) :: Frame
+	dropShadow(footer, 16, 0, 0.6, 5)
+
+
+	spriteOrGlyph(footer, {
+		Name = "Avatar",
+		Position = UDim2.fromOffset(12, 14),
+		Size = UDim2.fromOffset(58, 58),
+		BackgroundColor3 = Theme.Selected,
+		BackgroundTransparency = 0,
+		ImageTransparency = 0,
+		TextTransparency = 0,
+		TextSize = 26,
+	}, assets, "Logo", "✦")
+
+	label({
+		Position = UDim2.fromOffset(82, 14),
+		Size = UDim2.new(1, -112, 0, 28),
+		FontFace = Fonts.Bold,
+		Text = options.UserName or (LocalPlayer and LocalPlayer.DisplayName) or "Player",
+		TextSize = 17,
+		Parent = footer,
+	})
+	-- "Signed in" restated what the avatar already showed. The running library
+	-- version is the one thing this line can say that is not visible anywhere else,
+	-- and it makes a stale cached copy obvious at a glance.
+	label({
+		Name = "FooterStatus",
+		Position = UDim2.fromOffset(82, 43),
+		Size = UDim2.new(1, -112, 0, 24),
+		FontFace = Fonts.Medium,
+		Text = options.UserStatus or ("CATHUB GUI LIB v" .. KittenHub.Version),
+		TextColor3 = Theme.MutedText,
+		TextSize = 14,
+		Parent = footer,
+	})
+	-- The footer used to end in a "⋮" overflow marker. Nothing opened from it, and
+	-- the rounded font drew it as a smudge against the card edge.
+
+	local content = create("Frame", {
+		Name = "Content",
+		Position = UDim2.fromOffset(306, 76),
+		Size = UDim2.new(1, -320, 1, -90),
+		BackgroundColor3 = Theme.Surface,
+		BorderSizePixel = 0,
+		ClipsDescendants = true,
+		Parent = root,
+	}, {
+		corner(20),
+		stroke(Theme.Border, Line.Panel, true),
+		gradient(Color3.fromRGB(65, 47, 17), Color3.fromRGB(24, 17, 7), 105),
+	}) :: Frame
+	dropShadow(content, 26, 0, 0.55, 8)
+	-- No background pattern on the content panel. A dense page hides it entirely
+	-- while a sparse one (Settings, Players) leaves it stranded in open space, so
+	-- the texture only ever showed up as clutter on the emptier tabs.
+	local contentFooterLine = separatorLine(content, UDim.new(1, -30), 0, 0)
+	spriteOrGlyph(contentFooterLine, {
+		Name = "FooterHeart",
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(26, 24),
+		ImageTransparency = 0.25,
+		TextTransparency = 0.25,
+		TextSize = 16,
+		ZIndex = 3,
+	}, assets, "Heart", "♥")
+	spriteOrGlyph(root, {
+		Name = "BottomPaw",
+		AnchorPoint = Vector2.new(1, 1),
+		Position = UDim2.new(1, 8, 1, 8),
+		Size = UDim2.fromOffset(72, 72),
+		ImageTransparency = 0,
+		TextTransparency = 0,
+		TextSize = 28,
+		Rotation = -18,
+		ZIndex = 4,
+	}, assets, "Paw", "*")
+	spriteOrGlyph(content, {
+		Name = "CornerMascot",
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -20, 0, 22),
+		Size = UDim2.fromOffset(142, 82),
+		TextSize = 26,
+		ImageTransparency = 0,
+		TextTransparency = 0.18,
+		ZIndex = 4,
+	}, assets, "Sleeping", "♡")
+
+	local pages = create("Frame", {
+		Name = "Pages",
+		Position = UDim2.fromOffset(0, 0),
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		ZIndex = 2,
+		Parent = content,
+	}) :: Frame
+
+	-- Popups live outside the window frame: Content and every page ScrollingFrame
+	-- clip their descendants, so a dropdown list parented to its own row was cut
+	-- off. The overlay sits directly under the ScreenGui and is unclipped.
+	local overlay = create("Frame", {
+		Name = "Overlay",
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		ZIndex = 40,
+		Parent = screenGui,
+	}) :: Frame
+
+	local window = setmetatable({
+		Gui = screenGui,
+		Root = root,
+		Overlay = overlay,
+		_shadow = shadow,
+		Sidebar = sidebar,
+		TabList = tabList,
+		Pages = pages,
+		Theme = Theme,
+		Assets = assets,
+		Tabs = {},
+		Flags = {},
+		_connections = {},
+		_inputBegan = {},
+		_inputChanged = {},
+		_inputEnded = {},
+		_popups = {},
+		-- Default heading for a tab's page. `AddTab{ PageTitle = ... }` overrides it
+		-- per tab; without either the page keeps using the tab's own name.
+		PageTitle = options.PageTitle,
+		_baseSize = baseSize,
+		_designScale = math.clamp(designScale, 0.48, 1),
+		_uiScale = uiScale,
+		_selectedTab = nil,
+		_visible = true,
+		_minimized = false,
+		_destroyed = false,
+	}, WindowMethods)
+
+	table.insert(window._connections, UserInputService.InputBegan:Connect(function(input, processed)
+		if not processed and input.KeyCode == toggleKey then
+			window:Toggle()
+		end
+		fireInputHandlers(window._inputBegan, input, processed)
+	end))
+	table.insert(window._connections, UserInputService.InputChanged:Connect(function(input, processed)
+		fireInputHandlers(window._inputChanged, input, processed)
+	end))
+	table.insert(window._connections, UserInputService.InputEnded:Connect(function(input, processed)
+		fireInputHandlers(window._inputEnded, input, processed)
+	end))
+
+	makeDraggable(window, topbar, root)
+	updateResponsiveScale(window)
+
+	if workspace.CurrentCamera then
+		table.insert(window._connections, workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(function()
+			updateResponsiveScale(window)
+		end))
+	end
+
+	-- Collapsing only shrank the window frame, so the sidebar, the content panel
+	-- and the root decorations kept rendering inside a 76px strip: the page title
+	-- bled through the top bar and the bottom-right paw jumped up into it.
+	-- Everything below the top bar is hidden for the duration instead.
+	local collapsibles: {GuiObject} = { sidebar, content }
+	for _, child in ipairs(root:GetChildren()) do
+		if child:IsA("GuiObject") and child ~= topbar and child ~= sidebar and child ~= content then
+			table.insert(collapsibles, child)
+		end
+	end
+
+	local collapseToken = 0
+	table.insert(window._connections, minimize.MouseButton1Click:Connect(function()
+		window:ClosePopups()
+		window._minimized = not window._minimized
+		local minimized = window._minimized
+		collapseToken += 1
+		local token = collapseToken
+
+		if minimized then
+			for _, element in ipairs(collapsibles) do
+				element.Visible = false
+			end
+		end
+		tween(root, 0.25, {
+			Size = UDim2.fromOffset(baseSize.X, minimized and 76 or baseSize.Y),
+		})
+		if not minimized then
+			-- Wait for the frame to be tall enough again before revealing, so the
+			-- panels do not pop in against a clipped window.
+			task.delay(0.18, function()
+				if token ~= collapseToken or window._destroyed then
+					return
+				end
+				for _, element in ipairs(collapsibles) do
+					element.Visible = true
+				end
+			end)
+		end
+		if shadow then
+			shadow.Visible = not minimized
+		end
+	end))
+
+	table.insert(window._connections, maximize.MouseButton1Click:Connect(function()
+		root.Position = UDim2.fromScale(0.5, 0.5)
+		if shadow then
+			shadow.Position = UDim2.new(0.5, 0, 0.5, 8)
+		end
+		updateResponsiveScale(window)
+	end))
+
+	table.insert(window._connections, close.MouseButton1Click:Connect(function()
+		window:Destroy()
+	end))
+
+	for index, control in ipairs({ minimize, maximize, close }) do
+		local parts = controlParts[index]
+		local function paint(hovered: boolean)
+			tween(parts.Plate, 0.14, { BackgroundTransparency = hovered and 0.12 or 1 })
+			local tint = hovered and (parts.Danger and Theme.White or Theme.Text) or Theme.MutedText
+			for _, piece in ipairs(parts.Icon:GetChildren()) do
+				if piece:IsA("Frame") then
+					tween(piece, 0.14, { BackgroundColor3 = tint })
+					local pieceStroke = piece:FindFirstChildOfClass("UIStroke")
+					if pieceStroke then
+						tween(pieceStroke, 0.14, { Color = tint })
+					end
+				end
+			end
+		end
+		table.insert(window._connections, control.MouseEnter:Connect(function()
+			paint(true)
+		end))
+		table.insert(window._connections, control.MouseLeave:Connect(function()
+			paint(false)
+		end))
+	end
+
+	return window
+end
+
+function WindowMethods:Toggle(force: boolean?)
+	if self._destroyed then
+		return
+	end
+	if force == nil then
+		self._visible = not self._visible
+	else
+		self._visible = force
+	end
+	if not self._visible then
+		self:ClosePopups()
+	end
+	self.Gui.Enabled = self._visible
+end
+
+-- Closes every overlay popup (currently dropdown lists). `except` stays open so
+-- opening one dropdown can close the others in a single call.
+function WindowMethods:ClosePopups(except: any?)
+	for _, popup in ipairs(self._popups) do
+		if popup ~= except then
+			popup.Close()
+		end
+	end
+end
+
+function WindowMethods:Notify(options: {[string]: any}?)
+	if self._destroyed then
+		return
+	end
+	options = options or {}
+
+	local holder = self.Gui:FindFirstChild("Notifications") :: Frame?
+	if not holder then
+		-- AutomaticSize instead of a fixed 400px column: the old holder let the
+		-- fifth notification render past the top of its own frame.
+		holder = create("Frame", {
+			Name = "Notifications",
+			AnchorPoint = Vector2.new(1, 1),
+			Position = UDim2.new(1, -22, 1, -22),
+			Size = UDim2.fromOffset(330, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			ZIndex = 50,
+			Parent = self.Gui,
+		}, {
+			create("UIListLayout", {
+				VerticalAlignment = Enum.VerticalAlignment.Bottom,
+				Padding = UDim.new(0, 9),
+				SortOrder = Enum.SortOrder.LayoutOrder,
+			}) :: UIListLayout,
+		}) :: Frame
+	end
+
+	local liveSlots = {}
+	for _, child in ipairs((holder :: Frame):GetChildren()) do
+		if child:IsA("Frame") then
+			table.insert(liveSlots, child)
+		end
+	end
+	for index = 1, #liveSlots - (MAX_NOTIFICATIONS - 1) do
+		liveSlots[index]:Destroy()
+	end
+
+	local slot = create("Frame", {
+		Name = "NotificationSlot",
+		Size = UDim2.fromOffset(330, 86),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		ZIndex = 51,
+		Parent = holder,
+	}) :: Frame
+	local notification = create("Frame", {
+		Name = "Notification",
+		Position = UDim2.fromOffset(38, 0),
+		Size = UDim2.fromScale(1, 1),
+		BackgroundColor3 = Theme.Surface,
+		BorderSizePixel = 0,
+		ZIndex = 52,
+		Parent = slot,
+	}, {
+		corner(14),
+		stroke(Theme.Border, Line.Popup, true),
+		gradient(Color3.fromRGB(105, 76, 25), Color3.fromRGB(34, 25, 10), 105),
+	}) :: Frame
+	create("Frame", {
+		Name = "InnerBorder",
+		Position = UDim2.fromOffset(4, 4),
+		Size = UDim2.new(1, -8, 1, -8),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		ZIndex = 53,
+		Parent = notification,
+	}, { corner(11), stroke(Theme.Border, Line.Inner) })
+	local iconTile = create("Frame", {
+		Name = "IconTile",
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 12, 0.5, 0),
+		Size = UDim2.fromOffset(48, 48),
+		BackgroundColor3 = Theme.Selected,
+		BorderSizePixel = 0,
+		ZIndex = 54,
+		Parent = notification,
+	}, { corner(12), stroke(Theme.Border, Line.Tile, true) }) :: Frame
+	spriteOrGlyph(iconTile, {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(38, 34),
+		ImageTransparency = 0,
+		TextTransparency = 0,
+		TextSize = 20,
+		ZIndex = 55,
+	}, self.Assets, "Logo", "✦")
+	label({
+		Name = "Title",
+		Position = UDim2.fromOffset(72, 9),
+		Size = UDim2.new(1, -158, 0, 27),
+		FontFace = Fonts.Bold,
+		Text = options.Title or "CATHUB GUI LIB",
+		TextSize = 16,
+		ZIndex = 55,
+		Parent = notification,
+	})
+	label({
+		Name = "Content",
+		Position = UDim2.fromOffset(72, 36),
+		Size = UDim2.new(1, -158, 0, 39),
+		Text = options.Content or "Notification",
+		TextColor3 = Theme.MutedText,
+		TextSize = 12,
+		TextWrapped = true,
+		TextYAlignment = Enum.TextYAlignment.Top,
+		ZIndex = 55,
+		Parent = notification,
+	})
+	spriteOrGlyph(notification, {
+		Name = "DarkCat",
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -14, 0.5, 5),
+		Size = UDim2.fromOffset(66, 57),
+		ImageTransparency = 0.18,
+		TextTransparency = 0.35,
+		TextSize = 24,
+		ZIndex = 55,
+	}, self.Assets, "DarkCat", "=^.^=")
+	spriteOrGlyph(notification, {
+		Name = "Sparkles",
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -10, 0, 6),
+		Size = UDim2.fromOffset(24, 19),
+		ImageTransparency = 0.18,
+		TextTransparency = 0.18,
+		TextSize = 13,
+		ZIndex = 56,
+	}, self.Assets, "Sparkles", "✧")
+	local dismissButton = button({
+		Name = "Dismiss",
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		Text = "",
+		ZIndex = 57,
+		Parent = notification,
+	})
+
+	local closing = false
+	-- The dismiss connection is owned by the slot, not by the window: pushing it
+	-- into _connections leaked one dead entry per notification.
+	local dismissConnection: RBXScriptConnection? = nil
+	local function dismiss()
+		if closing or not slot.Parent then
+			return
+		end
+		closing = true
+		if dismissConnection then
+			dismissConnection:Disconnect()
+			dismissConnection = nil
+		end
+		tween(notification, 0.25, { Position = UDim2.fromOffset(350, 0) })
+		task.delay(0.27, function()
+			if slot.Parent then
+				slot:Destroy()
+			end
+		end)
+	end
+	dismissConnection = dismissButton.MouseButton1Click:Connect(dismiss)
+	slot.Destroying:Connect(function()
+		if dismissConnection then
+			dismissConnection:Disconnect()
+			dismissConnection = nil
+		end
+	end)
+	tween(notification, 0.3, { Position = UDim2.fromOffset(0, 0) })
+	task.delay(options.Duration or 4, dismiss)
+end
+
+function WindowMethods:AddTab(options: any)
+	if type(options) == "string" then
+		options = { Name = options }
+	end
+	options = options or {}
+	local tabName = options.Name or "New Tab"
+	local tabIcon = options.Icon or "✦"
+	local tabIconRole = options.IconRole
+	local order = #self.Tabs + 1
+	-- The window level PageTitle names the landing page only. Applying it to every
+	-- tab would stamp the same heading ("Home") on all of them.
+	local pageTitle = options.PageTitle or (order == 1 and self.PageTitle) or tabName
+	local tabStroke = stroke(Theme.Border, 1)
+
+	local tabButton = button({
+		Name = tabName,
+		Size = UDim2.new(1, 0, 0, 66),
+		BackgroundColor3 = Theme.Selected,
+		BackgroundTransparency = 1,
+		Text = "",
+		LayoutOrder = order,
+		Parent = self.TabList,
+	}, {
+		corner(14),
+		tabStroke,
+		gradient(Color3.fromRGB(128, 91, 28), Color3.fromRGB(58, 41, 14), 100),
+	})
+
+	local tabIconImage = if type(tabIcon) == "string" and string.find(tabIcon, "rbxasset", 1, true) == 1
+		then tabIcon
+		else (tabIconRole and self.Assets[tabIconRole] or nil)
+	local hasTabIconImage = type(tabIconImage) == "string" and tabIconImage ~= ""
+	imageOrGlyph(tabButton, {
+		Name = "Icon",
+		Position = UDim2.fromOffset(16, 0),
+		Size = UDim2.fromOffset(32, 66),
+		TextSize = 24,
+		ImageTransparency = 0.25,
+		TextTransparency = 0,
+		TextXAlignment = Enum.TextXAlignment.Center,
+	}, hasTabIconImage and tabIconImage or nil, tostring(tabIcon))
+	label({
+		Name = "TabName",
+		Position = UDim2.fromOffset(58, 0),
+		Size = UDim2.new(1, -98, 1, 0),
+		FontFace = Fonts.Semibold,
+		Text = tabName,
+		TextColor3 = Theme.Text,
+		TextSize = 19,
+		Parent = tabButton,
+	})
+	spriteOrGlyph(tabButton, {
+		Name = "TabDecoration",
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -14, 0.5, 0),
+		Size = UDim2.fromOffset(28, 28),
+		ImageTransparency = order == 1 and 0.08 or 0,
+		TextTransparency = 0.2,
+		TextSize = 17,
+	}, self.Assets, order == 1 and "Paw" or "DarkCat", "*")
+
+	local page = create("ScrollingFrame", {
+		Name = tabName .. "Page",
+		Position = UDim2.fromOffset(0, 0),
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		ScrollBarThickness = 3,
+		ScrollBarImageColor3 = Theme.Border,
+		CanvasSize = UDim2.fromOffset(0, 0),
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		Visible = false,
+		Parent = self.Pages,
+	}, { padding(34, 34, 34, 34), listLayout(22) }) :: ScrollingFrame
+
+	local pageHeader = create("Frame", {
+		Name = "PageHeader",
+		Size = UDim2.new(1, 0, 0, 82),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		LayoutOrder = 0,
+		Parent = page,
+	}) :: Frame
+	label({
+		Name = "PageTitle",
+		Position = UDim2.fromOffset(8, 0),
+		Size = UDim2.new(1, -220, 0, 58),
+		FontFace = Fonts.Display,
+		Text = pageTitle,
+		TextSize = 40,
+		Parent = pageHeader,
+	})
+	spriteOrGlyph(pageHeader, {
+		Name = "PageTitlePaw",
+		Position = UDim2.fromOffset(math.clamp((#pageTitle * 22) + 18, 160, 300), 11),
+		Size = UDim2.fromOffset(36, 36),
+		ImageTransparency = 0.08,
+		TextTransparency = 0.08,
+		TextSize = 24,
+		ZIndex = 3,
+	}, self.Assets, "Paw", "*")
+	local pageDivider = separatorLine(pageHeader, 72, 0, 0)
+	pageDivider.LayoutOrder = 0
+	spriteOrGlyph(pageDivider, {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.new(1, -170, 0.5, 0),
+		Size = UDim2.fromOffset(48, 44),
+		TextSize = 20,
+		ImageTransparency = 0,
+		TextTransparency = 0,
+		ZIndex = 3,
+	}, self.Assets, "Heart", "♥")
+
+	local tab = setmetatable({
+		Window = self,
+		Name = tabName,
+		Button = tabButton,
+		PageTitle = pageTitle,
+		Page = page,
+		Sections = {},
+		Order = order,
+		Stroke = tabStroke,
+	}, TabMethods)
+	table.insert(self.Tabs, tab)
+
+	table.insert(self._connections, tabButton.MouseEnter:Connect(function()
+		if self._selectedTab ~= tab then
+			tween(tabButton, 0.18, { BackgroundTransparency = 0.55 })
+		end
+	end))
+	table.insert(self._connections, tabButton.MouseLeave:Connect(function()
+		if self._selectedTab ~= tab then
+			tween(tabButton, 0.18, { BackgroundTransparency = 1 })
+		end
+	end))
+	table.insert(self._connections, tabButton.MouseButton1Click:Connect(function()
+		self:SelectTab(tab)
+	end))
+
+	if not self._selectedTab then
+		self:SelectTab(tab)
+	end
+	return tab
+end
+
+function WindowMethods:SelectTab(tab: any)
+	if self._selectedTab == tab then
+		return
+	end
+	self:ClosePopups()
+	for _, item in ipairs(self.Tabs) do
+		local selected = item == tab
+		item.Page.Visible = selected
+		tween(item.Button, 0.18, { BackgroundTransparency = selected and 0 or 1 })
+		if item.Stroke then
+			tween(item.Stroke, 0.18, { Transparency = selected and Line.TabSelected or 1 })
+		end
+		local icon = item.Button:FindFirstChild("Icon")
+		if icon and icon:IsA("TextLabel") then
+			icon.TextColor3 = selected and Theme.Text or Theme.MutedText
+		elseif icon and icon:IsA("ImageLabel") then
+			icon.ImageColor3 = selected and Theme.Text or Theme.MutedText
+			icon.ImageTransparency = selected and 0 or 0.25
+		end
+	end
+	self._selectedTab = tab
+end
+
+function WindowMethods:GetFlag(flag: string)
+	local control = self.Flags[flag]
+	return control and control.Value or nil
+end
+
+function WindowMethods:Destroy()
+	if self._destroyed then
+		return
+	end
+	self._destroyed = true
+	-- Close is not enough: a dropdown also owns the connections behind its option
+	-- rows, which are not children of the window Gui's row hierarchy.
+	for _, popup in ipairs(self._popups) do
+		if popup.Destroy then
+			popup.Destroy()
+		else
+			popup.Close()
+		end
+	end
+	disconnectAll(self._connections)
+	table.clear(self._inputBegan)
+	table.clear(self._inputChanged)
+	table.clear(self._inputEnded)
+	table.clear(self._popups)
+	table.clear(self.Flags)
+	if self.Gui then
+		self.Gui:Destroy()
+	end
+end
+
+function TabMethods:SetPageTitle(title: string)
+	self.PageTitle = title
+	local header = self.Page:FindFirstChild("PageHeader")
+	local heading = header and header:FindFirstChild("PageTitle") :: TextLabel?
+	if heading then
+		heading.Text = title
+	end
+	-- The decoration is two instances when an image is in play: the ImageLabel and
+	-- its "…Fallback" glyph twin, which both have to follow the heading.
+	local pawX = math.clamp((#title * 22) + 18, 160, 300)
+	for _, child in ipairs(header and header:GetChildren() or {}) do
+		if child:IsA("GuiObject") and string.find(child.Name, "PageTitlePaw", 1, true) == 1 then
+			child.Position = UDim2.fromOffset(pawX, 11)
+		end
+	end
+	return self
+end
+
+function TabMethods:AddSection(options: any)
+	if type(options) == "string" then
+		options = { Name = options }
+	end
+	options = options or {}
+	local name = options.Name or "Section"
+	local order = #self.Sections + 2
+
+	local wrapper = create("Frame", {
+		Name = name,
+		Size = UDim2.new(1, -2, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		LayoutOrder = order,
+		Parent = self.Page,
+	}) :: Frame
+
+	label({
+		Name = "SectionTitle",
+		Position = UDim2.fromOffset(34, 0),
+		Size = UDim2.new(1, -34, 0, 38),
+		FontFace = Fonts.Semibold,
+		Text = name,
+		TextColor3 = Theme.Text,
+		TextSize = 20,
+		Parent = wrapper,
+	})
+	spriteOrGlyph(wrapper, {
+		Position = UDim2.fromOffset(0, 4),
+		Size = UDim2.fromOffset(28, 28),
+		TextSize = 18,
+		ImageTransparency = 0.12,
+		TextTransparency = 0.12,
+	}, self.Window.Assets, "Paw", "✦")
+
+	local card = create("Frame", {
+		Name = "Card",
+		Position = UDim2.fromOffset(0, 46),
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundColor3 = Theme.Surface,
+		BorderSizePixel = 0,
+		Parent = wrapper,
+	}, {
+		corner(22),
+		stroke(Theme.Border, Line.Card, true),
+		padding(8, 18, 8, 18),
+		listLayout(0),
+		gradient(Color3.fromRGB(82, 59, 20), Color3.fromRGB(29, 21, 8), 105),
+	}) :: Frame
+
+	local section = setmetatable({
+		Tab = self,
+		Window = self.Window,
+		Name = name,
+		Wrapper = wrapper,
+		Card = card,
+		Controls = {},
+	}, SectionMethods)
+	table.insert(self.Sections, section)
+	return section
+end
+
+local function addDivider(parent: Instance, order: number)
+	create("Frame", {
+		Name = "Divider",
+		Size = UDim2.new(1, 0, 0, 1),
+		BackgroundColor3 = Theme.Divider,
+		BorderSizePixel = 0,
+		LayoutOrder = order,
+		Parent = parent,
+	})
+end
+
+local function controlRow(section: any, height: number, title: string, description: string?, iconRole: string?): Frame
+	-- Rows and dividers used to share LayoutOrder 0, which left the card order up
+	-- to undefined tie-breaking inside UIListLayout. Every child now gets an
+	-- explicit slot: divider = even, row = odd.
+	local order = (#section.Controls * 2) + 1
+	if #section.Controls > 0 then
+		addDivider(section.Card, order - 1)
+	end
+	local row = create("Frame", {
+		Name = title,
+		Size = UDim2.new(1, 0, 0, height),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		LayoutOrder = order,
+		Parent = section.Card,
+	}) :: Frame
+	local iconTile = create("Frame", {
+		Name = "IconTile",
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 4, 0.5, 0),
+		Size = UDim2.fromOffset(58, 58),
+		BackgroundColor3 = Theme.Selected,
+		BorderSizePixel = 0,
+		Parent = row,
+	}, { corner(14), stroke(Theme.Border, Line.Tile, true) }) :: Frame
+	spriteOrGlyph(iconTile, {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(46, 46),
+		TextSize = 25,
+		ImageTransparency = 0,
+		TextTransparency = 0,
+	}, section.Window.Assets, iconRole or "Logo", "✦")
+	label({
+		Name = "Title",
+		Position = UDim2.fromOffset(78, description and 9 or 0),
+		Size = UDim2.new(0.62, -78, 0, description and 32 or height),
+		FontFace = Fonts.Semibold,
+		Text = title,
+		TextSize = 18,
+		Parent = row,
+	})
+	if description then
+		label({
+			Name = "Description",
+			Position = UDim2.fromOffset(78, 39),
+			Size = UDim2.new(0.75, -78, 0, 25),
+			Text = description,
+			TextColor3 = Theme.MutedText,
+			TextSize = 14,
+			Parent = row,
+		})
+	end
+	table.insert(section.Controls, row)
+	return row
+end
+
+local function registerFlag(section: any, flag: string?, control: any)
+	if flag and flag ~= "" then
+		section.Window.Flags[flag] = control
+	end
+	return control
+end
+
+function SectionMethods:AddLabel(options: any)
+	if type(options) == "string" then
+		options = { Text = options }
+	end
+	options = options or {}
+	local text = options.Text or "Label"
+	local row = controlRow(self, options.Description and 68 or 56, text, options.Description, options.IconRole or "Logo")
+	local control = { Type = "Label", Value = text, Instance = row }
+	function control:Set(value: string)
+		self.Value = value
+		local title = row:FindFirstChild("Title") :: TextLabel
+		title.Text = value
+	end
+	return registerFlag(self, options.Flag, control)
+end
+
+function SectionMethods:AddButton(options: any)
+	if type(options) == "string" then
+		options = { Text = options }
+	end
+	options = options or {}
+	local text = options.Text or "Button"
+	local row = controlRow(self, options.Description and 82 or 68, text, options.Description, options.IconRole or "Bell")
+	local action = button({
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -5, 0.5, 0),
+		Size = UDim2.fromOffset(166, 54),
+		BackgroundTransparency = 1,
+		Text = "",
+		Parent = row,
+	}, {
+		corner(12),
+		stroke(Theme.Border, Line.Control, true),
+	})
+	local actionSurface = create("Frame", {
+		Name = "Surface",
+		Size = UDim2.fromScale(1, 1),
+		BackgroundColor3 = Theme.Selected,
+		BorderSizePixel = 0,
+		ZIndex = action.ZIndex,
+		Parent = action,
+	}, {
+		corner(12),
+		gradient(Color3.fromRGB(145, 105, 35), Color3.fromRGB(63, 45, 15), 105),
+	}) :: Frame
+	create("Frame", {
+		Name = "InnerBorder",
+		Position = UDim2.fromOffset(4, 4),
+		Size = UDim2.new(1, -8, 1, -8),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		ZIndex = action.ZIndex + 1,
+		Parent = action,
+	}, { corner(9), stroke(Theme.Border, Line.Inner) })
+	spriteOrGlyph(action, {
+		Name = "ButtonKitten",
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 14, 0.5, 0),
+		Size = UDim2.fromOffset(34, 30),
+		ImageTransparency = 0,
+		TextTransparency = 0,
+		TextSize = 18,
+		ZIndex = action.ZIndex + 2,
+	}, self.Window.Assets, "Logo", "✦")
+	label({
+		Name = "ButtonText",
+		Position = UDim2.fromOffset(58, 0),
+		Size = UDim2.new(1, -70, 1, 0),
+		FontFace = Fonts.Semibold,
+		Text = options.ButtonText or "Run",
+		TextColor3 = Theme.Text,
+		TextSize = 17,
+		ZIndex = action.ZIndex + 2,
+		Parent = action,
+	})
+	table.insert(self.Window._connections, action.MouseEnter:Connect(function()
+		tween(actionSurface, 0.15, { BackgroundTransparency = 0.12 })
+	end))
+	table.insert(self.Window._connections, action.MouseLeave:Connect(function()
+		tween(actionSurface, 0.15, { BackgroundTransparency = 0 })
+	end))
+	table.insert(self.Window._connections, action.MouseButton1Click:Connect(function()
+		safeCallback(options.Callback)
+	end))
+	local control = { Type = "Button", Instance = row }
+	function control:Fire()
+		safeCallback(options.Callback)
+	end
+	return registerFlag(self, options.Flag, control)
+end
+
+function SectionMethods:AddToggle(options: any)
+	options = options or {}
+	local text = options.Text or "Toggle"
+	local row = controlRow(self, options.Description and 82 or 68, text, options.Description, options.IconRole or "Sleeping")
+	local track = button({
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -5, 0.5, 0),
+		Size = UDim2.fromOffset(82, 42),
+		BackgroundColor3 = Theme.Selected,
+		BackgroundTransparency = 0,
+		Parent = row,
+	}, { corner(21), stroke(Theme.Border, Line.Control, true) })
+	local knob = create("Frame", {
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 4, 0.5, 0),
+		Size = UDim2.fromOffset(34, 34),
+		BackgroundColor3 = Theme.MutedText,
+		BorderSizePixel = 0,
+		Parent = track,
+	}, { corner(17) }) :: Frame
+	spriteOrGlyph(knob, {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(25, 25),
+		ImageTransparency = 0,
+		TextTransparency = 0,
+		TextSize = 15,
+		ZIndex = 3,
+	}, self.Window.Assets, "Paw", "✦")
+	spriteOrGlyph(row, {
+		Name = "ToggleSparkles",
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -108, 0.5, 0),
+		Size = UDim2.fromOffset(34, 28),
+		ImageTransparency = 0.1,
+		TextTransparency = 0.1,
+		TextSize = 20,
+		ZIndex = 4,
+	}, self.Window.Assets, "Sparkles", "✧")
+	local control = { Type = "Toggle", Value = options.Default == true, Instance = row }
+	function control:Set(value: boolean, silent: boolean?)
+		self.Value = value == true
+		tween(track, 0.18, { BackgroundColor3 = self.Value and Theme.White or Theme.Selected })
+		tween(knob, 0.18, {
+			Position = self.Value and UDim2.new(1, -38, 0.5, 0) or UDim2.new(0, 4, 0.5, 0),
+			BackgroundColor3 = self.Value and Theme.Black or Theme.MutedText,
+		})
+		if not silent then
+			safeCallback(options.Callback, self.Value)
+		end
+	end
+	function control:OnChanged(callback)
+		options.Callback = callback
+		return self
+	end
+	control:Set(control.Value, true)
+	table.insert(self.Window._connections, track.MouseButton1Click:Connect(function()
+		control:Set(not control.Value)
+	end))
+	return registerFlag(self, options.Flag, control)
+end
+
+function SectionMethods:AddSlider(options: any)
+	options = options or {}
+	local text = options.Text or "Slider"
+	local minimum = options.Min or 0
+	local maximum = options.Max or 100
+	local increment = options.Increment or 1
+	local row = controlRow(self, 104, text, options.Description, options.IconRole or "Peek")
+	local valueLabel = label({
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -5, 0, 3),
+		Size = UDim2.fromOffset(100, 28),
+		Text = "",
+		FontFace = Fonts.Value,
+		TextColor3 = Theme.Text,
+		TextSize = 17,
+		TextXAlignment = Enum.TextXAlignment.Right,
+		Parent = row,
+	})
+	local bar = button({
+		Position = UDim2.new(0, 78, 1, -29),
+		Size = UDim2.new(1, -88, 0, 10),
+		BackgroundColor3 = Theme.Track,
+		BackgroundTransparency = 0,
+		Parent = row,
+	}, { corner(5) })
+	local fill = create("Frame", {
+		Size = UDim2.fromScale(0, 1),
+		BackgroundColor3 = Theme.White,
+		BorderSizePixel = 0,
+		Parent = bar,
+	}, { corner(5) }) :: Frame
+	local knob = create("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0, 0.5),
+		Size = UDim2.fromOffset(34, 28),
+		BackgroundColor3 = Theme.White,
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Parent = bar,
+	}) :: Frame
+	spriteOrGlyph(knob, {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(34, 28),
+		ImageTransparency = 0,
+		TextTransparency = 0,
+		TextSize = 16,
+		ZIndex = 4,
+	}, self.Window.Assets, "Peek", "●")
+	local control = { Type = "Slider", Value = options.Default or minimum, Instance = row }
+	local dragging = false
+
+	function control:Set(value: number, silent: boolean?)
+		value = math.clamp(snapToIncrement(math.clamp(value, minimum, maximum), minimum, increment), minimum, maximum)
+		self.Value = value
+		local alpha = maximum == minimum and 0 or (value - minimum) / (maximum - minimum)
+		fill.Size = UDim2.fromScale(alpha, 1)
+		knob.Position = UDim2.fromScale(alpha, 0.5)
+		valueLabel.Text = tostring(value) .. (options.Suffix or "")
+		if not silent then
+			safeCallback(options.Callback, value)
+		end
+	end
+	function control:OnChanged(callback)
+		options.Callback = callback
+		return self
+	end
+	local function updateFromInput(input)
+		local width = bar.AbsoluteSize.X
+		if width <= 0 then
+			return
+		end
+		local alpha = math.clamp((input.Position.X - bar.AbsolutePosition.X) / width, 0, 1)
+		control:Set(minimum + ((maximum - minimum) * alpha))
+	end
+	table.insert(self.Window._connections, bar.InputBegan:Connect(function(input)
+		if isPressInput(input) then
+			dragging = true
+			updateFromInput(input)
+		end
+	end))
+	table.insert(self.Window._inputChanged, function(input)
+		if dragging and isMoveInput(input) then
+			updateFromInput(input)
+		end
+	end)
+	table.insert(self.Window._inputEnded, function(input)
+		if isPressInput(input) then
+			dragging = false
+		end
+	end)
+	control:Set(control.Value, true)
+	return registerFlag(self, options.Flag, control)
+end
+
+function SectionMethods:AddDropdown(options: any)
+	options = options or {}
+	local text = options.Text or "Dropdown"
+	local values = options.Values or {}
+	local row = controlRow(self, 86, text, options.Description, options.IconRole or "Peek")
+	local dropdown = button({
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -5, 0.5, 0),
+		Size = UDim2.fromOffset(268, 56),
+		BackgroundColor3 = Theme.Selected,
+		BackgroundTransparency = 0,
+		Text = "",
+		Parent = row,
+	}, {
+		corner(12),
+		stroke(Theme.Border, Line.Control, true),
+		gradient(Color3.fromRGB(126, 91, 29), Color3.fromRGB(54, 39, 13), 105),
+	})
+	local valueText = label({
+		Position = UDim2.fromOffset(18, 0),
+		Size = UDim2.new(1, -62, 1, 0),
+		FontFace = Fonts.Medium,
+		Text = "Select",
+		TextSize = 16,
+		Parent = dropdown,
+	})
+	local dropdownCatRole = if self.Window.Assets.DropdownCat ~= "" then "DropdownCat" else "Peek"
+	spriteOrGlyph(dropdown, {
+		Name = "DropdownKitten",
+		AnchorPoint = Vector2.new(1, 1),
+		Position = UDim2.new(1, -20, 0, 4),
+		Size = UDim2.fromOffset(62, 35),
+		ImageTransparency = 0,
+		TextTransparency = 0,
+		TextSize = 18,
+		ZIndex = 8,
+	}, self.Window.Assets, dropdownCatRole, "")
+	local chevron = create("Frame", {
+		Name = "Chevron",
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -14, 0.5, 2),
+		Size = UDim2.fromOffset(18, 12),
+		BackgroundTransparency = 1,
+		Parent = dropdown,
+	}) :: Frame
+	for index, rotation in ipairs({ 45, -45 }) do
+		create("Frame", {
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = index == 1 and UDim2.fromOffset(5, 5) or UDim2.fromOffset(13, 5),
+			Size = UDim2.fromOffset(11, 3),
+			Rotation = rotation,
+			BackgroundColor3 = Theme.Text,
+			BorderSizePixel = 0,
+			Parent = chevron,
+		}, { corner(2) })
+	end
+	-- The option list lives in the window overlay instead of inside the row: both
+	-- Content and the page ScrollingFrame clip descendants, so an in-row list was
+	-- cut off no matter how high its ZIndex was.
+	local listScale = create("UIScale", { Scale = 1 }) :: UIScale
+	local list = create("Frame", {
+		Name = "Options",
+		AnchorPoint = Vector2.new(0, 0),
+		Position = UDim2.fromOffset(0, 0),
+		Size = UDim2.fromOffset(268, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundColor3 = Theme.SurfaceHover,
+		BorderSizePixel = 0,
+		Visible = false,
+		ZIndex = 41,
+		Parent = self.Window.Overlay,
+	}, {
+		listScale,
+		corner(12),
+		stroke(Theme.Border, Line.Popup, true),
+		padding(7, 7, 7, 7),
+		-- The popup stacks an optional search box above the scrolling body, so its
+		-- children are laid out rather than each one positioned by hand.
+		listLayout(6),
+		gradient(Color3.fromRGB(112, 81, 27), Color3.fromRGB(47, 34, 12), 105),
+	}) :: Frame
+
+	-- Long lists are unusable without a filter: a dropdown carrying every gun in
+	-- the game is a few hundred rows of scrolling. The box lives inside the popup,
+	-- so the filter belongs to the dropdown instead of costing the caller a
+	-- separate Textbox control in the section.
+	local searchBox: TextBox? = nil
+	if options.Searchable then
+		searchBox = create("TextBox", {
+			Name = "Search",
+			Size = UDim2.new(1, 0, 0, DROPDOWN_SEARCH_HEIGHT),
+			LayoutOrder = 1,
+			BackgroundColor3 = Theme.Selected,
+			BackgroundTransparency = 0.25,
+			BorderSizePixel = 0,
+			ClearTextOnFocus = false,
+			FontFace = Fonts.Mono,
+			PlaceholderText = options.SearchPlaceholder or "Search...",
+			PlaceholderColor3 = Theme.FaintText,
+			Text = "",
+			TextColor3 = Theme.Text,
+			TextSize = 13,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			ZIndex = 42,
+			Parent = list,
+		}, { corner(9), stroke(Theme.Border, Line.Inner, true), padding(0, 11, 0, 11) }) :: TextBox
+	end
+
+	-- Options live in a scrolling body rather than directly in the popup.
+	-- Both automatic modes are off and the numbers written by hand: AutomaticSize
+	-- plus a UISizeConstraint does not actually clamp, so a list of ~30 rows drew
+	-- taller than the viewport, and AutomaticCanvasSize is ignored while
+	-- AutomaticSize is set on the same frame, which left the canvas at zero — a
+	-- clipped list with a scrollbar that had nothing to scroll. `measureList`
+	-- writes both from the visible row count.
+	local listBody = create("ScrollingFrame", {
+		Name = "OptionList",
+		Size = UDim2.new(1, 0, 0, 0),
+		LayoutOrder = 2,
+		AutomaticSize = Enum.AutomaticSize.None,
+		AutomaticCanvasSize = Enum.AutomaticSize.None,
+		CanvasSize = UDim2.fromOffset(0, 0),
+		ScrollingDirection = Enum.ScrollingDirection.Y,
+		ScrollingEnabled = true,
+		Active = true,
+		ScrollBarThickness = 3,
+		ScrollBarImageColor3 = Theme.Border,
+		ScrollBarImageTransparency = 0.4,
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		ZIndex = 42,
+		Parent = list,
+	}, {
+		listLayout(DROPDOWN_OPTION_PADDING),
+	}) :: ScrollingFrame
+
+	-- Shown in place of the rows when the filter excludes everything. Leaving the
+	-- last matching list on screen reads as if the search did nothing.
+	local emptyLabel = label({
+		Name = "NoMatch",
+		Size = UDim2.new(1, 0, 0, DROPDOWN_OPTION_HEIGHT),
+		-- Last in the layout: option rows are ordered by their index.
+		LayoutOrder = 2147483647,
+		FontFace = Fonts.Medium,
+		Text = "No match",
+		TextColor3 = Theme.FaintText,
+		TextSize = 14,
+		TextXAlignment = Enum.TextXAlignment.Center,
+		Visible = false,
+		ZIndex = 43,
+		Parent = listBody,
+	})
+	local control = { Type = "Dropdown", Value = options.Default or values[1], Values = values, Instance = row }
+	local window = self.Window
+	local popup = {}
+	local trackConnection: RBXScriptConnection? = nil
+	local optionConnections: {RBXScriptConnection} = {}
+	-- Rows are kept so the selection marker can be repainted on every row when the
+	-- value changes, not just on the row that was clicked.
+	local optionRows: {{[string]: any}} = {}
+	-- Forward declared: control:Set is written above the row builder but has to
+	-- repaint the rows it created.
+	local repaintOptions: () -> ()
+	local searchQuery = ""
+
+	-- Height and canvas from the visible row count. Rows are a fixed height, so
+	-- this is exact the moment the rows exist, without waiting for a layout pass.
+	local function measureList()
+		local visible = 0
+		for _, entry in ipairs(optionRows) do
+			if entry.Button.Visible then
+				visible += 1
+			end
+		end
+		if visible == 0 then
+			visible = 1 -- the "no match" row occupies one slot
+		end
+		local content = visible * (DROPDOWN_OPTION_HEIGHT + DROPDOWN_OPTION_PADDING) - DROPDOWN_OPTION_PADDING
+		listBody.CanvasSize = UDim2.fromOffset(0, content)
+		listBody.Size = UDim2.new(1, 0, 0, math.min(content, DROPDOWN_MAX_LIST_HEIGHT))
+	end
+
+	-- `SearchKey` lets a caller make a row findable by more than its label — an
+	-- internal item name behind a display name, for instance. It is called once
+	-- per row when the row is built, not once per keystroke.
+	local function searchTextFor(value: any): string
+		local text = tostring(value)
+		if type(options.SearchKey) == "function" then
+			local ok, extra = pcall(options.SearchKey, value)
+			if ok and extra ~= nil then
+				text ..= "\0" .. tostring(extra)
+			end
+		end
+		return text:lower()
+	end
+
+	-- Searching hides rows instead of rebuilding them: UIListLayout skips invisible
+	-- children, so the list reflows for free and the row a click is travelling
+	-- towards is never destroyed under the cursor.
+	local function applyFilter()
+		local query = searchQuery:lower()
+		local matches = 0
+		for _, entry in ipairs(optionRows) do
+			local visible = query == ""
+				or string.find(entry.Search, query, 1, true) ~= nil
+			entry.Button.Visible = visible
+			if visible then
+				matches += 1
+			end
+		end
+		emptyLabel.Visible = matches == 0
+		emptyLabel.Text = if query == "" then "Empty" else ("No match for \"%s\""):format(searchQuery)
+		measureList()
+	end
+
+	local function positionList()
+		local anchor = dropdown.AbsolutePosition
+		local anchorSize = dropdown.AbsoluteSize
+		local scale = window._uiScale.Scale
+		listScale.Scale = scale
+		-- Width is set pre-scale so that after UIScale it matches the button.
+		list.Size = UDim2.fromOffset(anchorSize.X / scale, 0)
+
+		local camera = workspace.CurrentCamera
+		local viewportHeight = camera and camera.ViewportSize.Y or 0
+		local listHeight = list.AbsoluteSize.Y
+		local spaceBelow = viewportHeight - (anchor.Y + anchorSize.Y)
+		if viewportHeight > 0 and spaceBelow < listHeight + (14 * scale) then
+			list.AnchorPoint = Vector2.new(0, 1)
+			list.Position = UDim2.fromOffset(anchor.X, anchor.Y - (8 * scale))
+		else
+			list.AnchorPoint = Vector2.new(0, 0)
+			list.Position = UDim2.fromOffset(anchor.X, anchor.Y + anchorSize.Y + (8 * scale))
+		end
+	end
+
+	function popup.Close()
+		if not list.Visible then
+			return
+		end
+		list.Visible = false
+		if trackConnection then
+			trackConnection:Disconnect()
+			trackConnection = nil
+		end
+	end
+
+	function popup.Destroy()
+		popup.Close()
+		disconnectAll(optionConnections)
+	end
+
+	function popup.Open()
+		window:ClosePopups(popup)
+		list.Visible = true
+		positionList()
+		-- Scrolling the page or dragging the window moves the button; follow it.
+		trackConnection = dropdown:GetPropertyChangedSignal("AbsolutePosition"):Connect(positionList)
+		task.defer(function()
+			if list.Visible then
+				positionList()
+			end
+		end)
+	end
+
+	table.insert(window._popups, popup)
+
+	function control:Set(value: any, silent: boolean?)
+		if not table.find(self.Values, value) then
+			return
+		end
+		self.Value = value
+		valueText.Text = tostring(value)
+		if repaintOptions then
+			repaintOptions()
+		end
+		-- Only a real pick closes the menu. A silent set is programmatic — a
+		-- Refresh restoring the selection, or a config being loaded — and closing
+		-- on those yanked an open list out from under the pointer.
+		if not silent then
+			popup.Close()
+			safeCallback(options.Callback, value)
+		end
+	end
+	function control:Refresh(newValues: {any}, keepValue: boolean?)
+		-- A rebuild destroys and recreates every row, so a rebuild that lands while
+		-- the list is open deletes the row the cursor is over and the click hits
+		-- nothing. Callers refreshing on an event that fires in bursts (an
+		-- inventory streaming in, say) hand over the same list nearly every time,
+		-- so an unchanged list costs nothing.
+		local unchanged = #newValues == #self.Values
+		if unchanged then
+			for index, value in ipairs(newValues) do
+				if self.Values[index] ~= value then
+					unchanged = false
+					break
+				end
+			end
+		end
+		if unchanged then
+			-- Values are equal but not the same table; keep the caller's.
+			self.Values = newValues
+			if not keepValue or not table.find(newValues, self.Value) then
+				local wanted = newValues[1]
+				if wanted ~= self.Value then
+					self:Set(wanted, true)
+				end
+			end
+			return
+		end
+
+		self.Values = newValues
+		-- Option rows own their own connection list. Pushing them into
+		-- window._connections left one dead entry per option per refresh, so a
+		-- dropdown refreshed on a loop grew that table without bound.
+		disconnectAll(optionConnections)
+		for _, child in ipairs(listBody:GetChildren()) do
+			if child:IsA("TextButton") then
+				child:Destroy()
+			end
+		end
+		table.clear(optionRows)
+		if not keepValue or not table.find(newValues, self.Value) then
+			self.Value = newValues[1]
+		end
+		local scroll = listBody.CanvasPosition
+		self:_build()
+		if self.Value then
+			self:Set(self.Value, true)
+		end
+		-- Rebuilding resets the canvas; a list refreshed while open would otherwise
+		-- jump back to the top.
+		listBody.CanvasPosition = scroll
+	end
+	-- An option row was a bare TextButton whose only state was a slightly lighter
+	-- background on hover: nothing marked the current value, and every row carried
+	-- the same weight and colour, so the list read as a block of plain text. Each
+	-- row now owns a left accent bar, its own label, and a drawn check, and the
+	-- three are repainted together whenever the selection or hover changes.
+	local function paintOption(entry: {[string]: any}, hovered: boolean)
+		local selected = entry.Value == control.Value
+		local duration = 0.12
+		tween(entry.Button, duration, {
+			BackgroundTransparency = if selected then 0.62 elseif hovered then 0.78 else 1,
+		})
+		tween(entry.Accent, duration, {
+			BackgroundTransparency = selected and 0 or 1,
+			Size = UDim2.fromOffset(3, selected and 20 or 8),
+		})
+		tween(entry.Label, duration, {
+			TextColor3 = (selected or hovered) and Theme.Text or Theme.MutedText,
+			-- Hover nudges the label a few pixels right. It is the cheapest way to
+			-- make a row feel like a target rather than a line of text.
+			Position = UDim2.fromOffset(selected and 22 or (hovered and 20 or 16), 0),
+		})
+		entry.Label.FontFace = selected and Fonts.Semibold or Fonts.Medium
+		for _, piece in ipairs(entry.Check:GetChildren()) do
+			if piece:IsA("Frame") then
+				tween(piece, duration, { BackgroundTransparency = selected and 0 or 1 })
+			end
+		end
+	end
+
+	function repaintOptions()
+		for _, entry in ipairs(optionRows) do
+			paintOption(entry, false)
+		end
+	end
+
+	function control:_build()
+		for index, value in ipairs(self.Values) do
+			local option = button({
+				Name = "Option",
+				Size = UDim2.new(1, 0, 0, DROPDOWN_OPTION_HEIGHT),
+				BackgroundColor3 = Theme.Selected,
+				BackgroundTransparency = 1,
+				Text = "",
+				LayoutOrder = index,
+				ZIndex = 42,
+				Parent = listBody,
+			}, { corner(8) })
+
+			-- Selection marker on the leading edge. A filled bar survives at any text
+			-- size, where a coloured background alone disappears against the popup.
+			local accent = create("Frame", {
+				Name = "Accent",
+				AnchorPoint = Vector2.new(0, 0.5),
+				Position = UDim2.new(0, 7, 0.5, 0),
+				Size = UDim2.fromOffset(3, 8),
+				BackgroundColor3 = Theme.White,
+				BackgroundTransparency = 1,
+				BorderSizePixel = 0,
+				ZIndex = 43,
+				Parent = option,
+			}, { corner(2) }) :: Frame
+
+			local optionLabel = label({
+				Name = "OptionText",
+				Position = UDim2.fromOffset(16, 0),
+				Size = UDim2.new(1, -52, 1, 0),
+				FontFace = Fonts.Medium,
+				Text = tostring(value),
+				TextColor3 = Theme.MutedText,
+				TextSize = 16,
+				TextTruncate = Enum.TextTruncate.AtEnd,
+				ZIndex = 43,
+				Parent = option,
+			})
+
+			-- Drawn check instead of a "✓" glyph: the tick is the only mark on the
+			-- row, and a font glyph sits on its own baseline rather than the row's.
+			local check = create("Frame", {
+				Name = "Check",
+				AnchorPoint = Vector2.new(1, 0.5),
+				Position = UDim2.new(1, -12, 0.5, 0),
+				Size = UDim2.fromOffset(14, 14),
+				BackgroundTransparency = 1,
+				ZIndex = 43,
+				Parent = option,
+			}) :: Frame
+			create("Frame", {
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				Position = UDim2.fromOffset(4, 9),
+				Size = UDim2.fromOffset(2, 7),
+				Rotation = -45,
+				BackgroundColor3 = Theme.White,
+				BackgroundTransparency = 1,
+				BorderSizePixel = 0,
+				ZIndex = 44,
+				Parent = check,
+			}, { corner(1) })
+			create("Frame", {
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				Position = UDim2.fromOffset(9, 6),
+				Size = UDim2.fromOffset(2, 13),
+				Rotation = 45,
+				BackgroundColor3 = Theme.White,
+				BackgroundTransparency = 1,
+				BorderSizePixel = 0,
+				ZIndex = 44,
+				Parent = check,
+			}, { corner(1) })
+
+			local entry = {
+				Value = value,
+				Button = option,
+				Accent = accent,
+				Label = optionLabel,
+				Check = check,
+				Search = searchTextFor(value),
+			}
+			table.insert(optionRows, entry)
+			paintOption(entry, false)
+
+			table.insert(optionConnections, option.MouseEnter:Connect(function()
+				paintOption(entry, true)
+			end))
+			table.insert(optionConnections, option.MouseLeave:Connect(function()
+				paintOption(entry, false)
+			end))
+			table.insert(optionConnections, option.MouseButton1Click:Connect(function()
+				control:Set(value)
+			end))
+		end
+		-- Rows start hidden or shown according to the search that is already in the
+		-- box, and the popup is sized from what survived it.
+		applyFilter()
+	end
+	control.Window = self.Window
+	control:_build()
+	if control.Value then
+		control:Set(control.Value, true)
+	end
+
+	-- Filters the list from code. Also the hook the search box uses, so typing and
+	-- setting the query end up in the same place.
+	function control:SetSearch(text: string?)
+		local query = tostring(text or "")
+		if query == searchQuery then
+			return
+		end
+		searchQuery = query
+		if searchBox and searchBox.Text ~= query then
+			searchBox.Text = query
+		end
+		applyFilter()
+		if list.Visible then
+			positionList()
+			-- The popup grows and shrinks with the filter, and a list anchored to
+			-- its bottom edge moves as it does. AbsoluteSize only catches up after
+			-- the layout pass, so the flip is decided again once it has.
+			task.defer(function()
+				if list.Visible then
+					positionList()
+				end
+			end)
+		end
+	end
+
+	if searchBox then
+		-- Text, not FocusLost: the list filters as the query is typed. The
+		-- connection lives on the window rather than on the option list, which is
+		-- torn down on every Refresh.
+		table.insert(window._connections, searchBox:GetPropertyChangedSignal("Text"):Connect(function()
+			control:SetSearch(searchBox.Text)
+		end))
+	end
+
+	table.insert(window._connections, dropdown.MouseButton1Click:Connect(function()
+		if list.Visible then
+			popup.Close()
+		else
+			popup.Open()
+		end
+	end))
+
+	-- Clicking anywhere outside the button and the list closes the dropdown.
+	table.insert(window._inputBegan, function(input)
+		if not list.Visible or not isPressInput(input) then
+			return
+		end
+		local point = Vector2.new(input.Position.X, input.Position.Y)
+		local function contains(element: GuiObject): boolean
+			local origin = element.AbsolutePosition
+			local size = element.AbsoluteSize
+			return point.X >= origin.X and point.X <= origin.X + size.X
+				and point.Y >= origin.Y and point.Y <= origin.Y + size.Y
+		end
+		if not contains(dropdown) and not contains(list) then
+			popup.Close()
+		end
+	end)
+
+	return registerFlag(self, options.Flag, control)
+end
+
+-- Studio's colour grid is BrickColor's own 128 entry palette. Reading it off the
+-- engine keeps the set identical to Studio's instead of a copy that drifts.
+local function palette128(): {Color3}
+	local colors: {Color3} = {}
+	for index = 0, 127 do
+		local ok, brick = pcall(BrickColor.palette, index)
+		if ok and brick then
+			table.insert(colors, brick.Color)
+		end
+	end
+	return colors
+end
+
+-- Bottom strip of the Studio picker. The palette samples only a few greys, so
+-- the ramp is generated rather than filtered out of it.
+local function greyRamp(count: number): {Color3}
+	local colors: {Color3} = {}
+	for index = 0, count - 1 do
+		local level = count <= 1 and 0 or index / (count - 1)
+		table.insert(colors, Color3.new(level, level, level))
+	end
+	return colors
+end
+
+local function colorToHex(color: Color3): string
+	return string.format(
+		"%02X%02X%02X",
+		math.clamp(math.round(color.R * 255), 0, 255),
+		math.clamp(math.round(color.G * 255), 0, 255),
+		math.clamp(math.round(color.B * 255), 0, 255)
+	)
+end
+
+local function hexToColor(text: string): Color3?
+	local digits = string.gsub(string.upper(text), "[^0-9A-F]", "")
+	-- Three digit shorthand is what people paste out of CSS; expand it rather
+	-- than reject it.
+	if #digits == 3 then
+		digits = string.gsub(digits, "(.)", "%1%1")
+	end
+	if #digits ~= 6 then
+		return nil
+	end
+	local value = tonumber(digits, 16)
+	if not value then
+		return nil
+	end
+	return Color3.fromRGB(
+		bit32.band(bit32.rshift(value, 16), 255),
+		bit32.band(bit32.rshift(value, 8), 255),
+		bit32.band(value, 255)
+	)
+end
+
+-- Roblox has no hexagon primitive and ships no hexagon sprite, and making every
+-- caller upload one just to see the grid is a bad trade. The mask is drawn once
+-- at runtime into an EditableImage instead: a white hexagon whose alpha carries
+-- the shape, so a cell is that one image tinted per colour.
+local HEX_MASK_WIDTH = 96
+local hexagonMaskContent: any = nil
+-- The EditableImage is held alongside its Content: nothing else references it
+-- once the Content is handed to an ImageLabel, and a collected image blanks
+-- every cell drawn from it.
+local hexagonMaskImage: any = nil
+local hexagonMaskDrawn = false
+
+-- `parent` is the ScreenGui the cells will actually live in. It matters: an
+-- EditableImage is created without complaint inside the executor's hidden UI
+-- container (gethui/CoreGui) but never loads there, while an uploaded asset
+-- does. Assigning it blind drew 128 invisible cells, so the content is probed
+-- where it will be used and thrown away when it does not come up.
+local function hexagonMask(parent: Instance?): any
+	if hexagonMaskDrawn then
+		return hexagonMaskContent
+	end
+	hexagonMaskDrawn = true
+	-- EditableImage is not on every client and Content.fromObject is newer still,
+	-- so a failure here has to leave the picker standing rather than error.
+	local ok = pcall(function()
+		local width = HEX_MASK_WIDTH
+		local height = math.round((width * 2) / math.sqrt(3))
+		local radius = height / 2
+		local centreX = width / 2
+		local image = game:GetService("AssetService"):CreateEditableImage({ Size = Vector2.new(width, height) })
+		local pixels = buffer.create(width * height * 4)
+		for y = 0, height - 1 do
+			for x = 0, width - 1 do
+				-- 3x3 supersampling: a hard inside test leaves the six diagonal edges
+				-- visibly stepped at the 26px these are drawn at.
+				local hits = 0
+				for sy = 0, 2 do
+					for sx = 0, 2 do
+						local px = math.abs((x + ((sx + 0.5) / 3)) - centreX)
+						local py = math.abs((y + ((sy + 0.5) / 3)) - radius)
+						-- Pointy top hexagon: vertical sides at +-width/2, and the slanted
+						-- edges closing linearly from the full radius at the centre line to
+						-- half of it at those sides.
+						if px <= centreX and py <= radius * (1 - (px / width)) then
+							hits += 1
+						end
+					end
+				end
+				local offset = ((y * width) + x) * 4
+				buffer.writeu8(pixels, offset, 255)
+				buffer.writeu8(pixels, offset + 1, 255)
+				buffer.writeu8(pixels, offset + 2, 255)
+				buffer.writeu8(pixels, offset + 3, math.round((hits / 9) * 255))
+			end
+		end
+		image:WritePixelsBuffer(Vector2.zero, Vector2.new(width, height), pixels)
+		local content = Content.fromObject(image)
+
+		local probe = create("ImageLabel", {
+			Name = "HexagonProbe",
+			Size = UDim2.fromOffset(1, 1),
+			BackgroundTransparency = 1,
+			ImageTransparency = 1,
+			ImageContent = content,
+			Parent = parent,
+		}) :: ImageLabel
+		-- Bounded, and only ever paid once per library load.
+		local deadline = os.clock() + 0.35
+		while not probe.IsLoaded and os.clock() < deadline do
+			task.wait()
+		end
+		local loaded = probe.IsLoaded
+		probe:Destroy()
+		if loaded then
+			hexagonMaskImage = image
+			hexagonMaskContent = content
+		end
+	end)
+	if not ok then
+		hexagonMaskImage = nil
+		hexagonMaskContent = nil
+	end
+	return hexagonMaskContent
+end
+
+-- Pointy top hexagons: WIDTH is the flat to flat span, HEIGHT the point to point
+-- one at 2/sqrt(3) of it. A row advances only three quarters of a height because
+-- neighbouring rows interlock, and odd rows shift half a column into the notch.
+local HEX_WIDTH = 26
+local HEX_HEIGHT = 30
+local HEX_GAP = 2
+local HEX_STEP_X = HEX_WIDTH + HEX_GAP
+local HEX_STEP_Y = math.floor(HEX_HEIGHT * 0.75) + HEX_GAP
+-- Squares do not interlock, so the fallback grid has to advance a full height.
+-- Reusing the hexagon step overlapped every row by 6px and closed the gaps.
+local SQUARE_STEP_Y = HEX_HEIGHT + HEX_GAP
+local HEX_GREY_GAP = 18
+local PICKER_PADDING = 12
+local PICKER_FOOTER = 46
+
+function SectionMethods:AddColorpicker(options: any)
+	options = options or {}
+	local text = options.Text or "Color"
+	local window = self.Window
+	local columns = math.max(2, options.Columns or 12)
+	local colors = palette128()
+	local greys = greyRamp(columns)
+	local row = controlRow(self, options.Description and 86 or 72, text, options.Description, options.IconRole or "Sparkles")
+
+	local swatch = button({
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -5, 0.5, 0),
+		Size = UDim2.fromOffset(178, 52),
+		BackgroundColor3 = Theme.Selected,
+		BackgroundTransparency = 0,
+		Parent = row,
+	}, {
+		corner(12),
+		stroke(Theme.Border, Line.Control, true),
+		gradient(Color3.fromRGB(126, 91, 29), Color3.fromRGB(54, 39, 13), 105),
+	})
+	local swatchFill = create("Frame", {
+		Name = "Fill",
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 8, 0.5, 0),
+		Size = UDim2.fromOffset(36, 36),
+		BackgroundColor3 = Theme.White,
+		BorderSizePixel = 0,
+		Parent = swatch,
+	}, { corner(9), stroke(Theme.Border, Line.Inner, true) }) :: Frame
+	local swatchHex = label({
+		Name = "Hex",
+		Position = UDim2.fromOffset(54, 0),
+		Size = UDim2.new(1, -66, 1, 0),
+		FontFace = Fonts.Mono,
+		Text = "#FFFFFF",
+		TextSize = 15,
+		Parent = swatch,
+	})
+
+	-- An explicitly supplied sprite wins, then the mask drawn at runtime. Only if
+	-- both are unavailable does the grid degrade to rounded squares, which is what
+	-- every other sprite in the library does when its asset is missing.
+	local suppliedHex = window.Assets.Hexagon
+	local hexImage = (type(suppliedHex) == "string" and suppliedHex ~= "") and suppliedHex or nil
+	local hexContent = hexImage == nil and hexagonMask(window.Gui) or nil
+	local useHex = hexImage ~= nil or hexContent ~= nil
+	local rimTransparency = useHex and "ImageTransparency" or "BackgroundTransparency"
+	local rimColor = useHex and "ImageColor3" or "BackgroundColor3"
+	local stepY = useHex and HEX_STEP_Y or SQUARE_STEP_Y
+	-- Only hexagons interlock; shifting square rows leaves a ragged edge.
+	local rowIndent = useHex and math.floor(HEX_STEP_X / 2) or 0
+
+	-- Every measurement below is derived from these, so a caller changing
+	-- `Columns` reshapes the whole popup without another number being touched.
+	local paletteRows = math.max(1, math.ceil(#colors / columns))
+	local gridWidth = (columns * HEX_STEP_X) + rowIndent
+	local paletteHeight = ((paletteRows - 1) * stepY) + HEX_HEIGHT
+	local greyTop = paletteHeight + HEX_GREY_GAP
+	local gridHeight = greyTop + HEX_HEIGHT
+	local panelWidth = gridWidth + (PICKER_PADDING * 2)
+	local panelHeight = gridHeight + (PICKER_PADDING * 2) + PICKER_FOOTER
+
+	-- Same reason as the dropdown list: Content and the page ScrollingFrame both
+	-- clip, so an in-row popup is cut off whatever its ZIndex is.
+	local panelScale = create("UIScale", { Scale = 1 }) :: UIScale
+	local panel = create("Frame", {
+		Name = "ColorPalette",
+		AnchorPoint = Vector2.new(0, 0),
+		Size = UDim2.fromOffset(panelWidth, panelHeight),
+		BackgroundColor3 = Theme.SurfaceHover,
+		BorderSizePixel = 0,
+		Visible = false,
+		ZIndex = 41,
+		Parent = window.Overlay,
+	}, {
+		panelScale,
+		corner(12),
+		stroke(Theme.Border, Line.Popup, true),
+		gradient(Color3.fromRGB(112, 81, 27), Color3.fromRGB(47, 34, 12), 105),
+	}) :: Frame
+
+	local grid = create("Frame", {
+		Name = "Grid",
+		Position = UDim2.fromOffset(PICKER_PADDING, PICKER_PADDING),
+		Size = UDim2.fromOffset(gridWidth, gridHeight),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		ZIndex = 43,
+		Parent = panel,
+	}) :: Frame
+	create("Frame", {
+		Name = "GreyDivider",
+		Position = UDim2.fromOffset(0, paletteHeight + math.floor(HEX_GREY_GAP / 2)),
+		Size = UDim2.new(1, 0, 0, 1),
+		BackgroundColor3 = Theme.Divider,
+		BackgroundTransparency = 0.35,
+		BorderSizePixel = 0,
+		ZIndex = 43,
+		Parent = grid,
+	})
+
+	local cells: {{[string]: any}} = {}
+	local hoverCell: {[string]: any}? = nil
+
+	local function addCell(color: Color3, left: number, top: number)
+		local centreX = left + (HEX_WIDTH / 2)
+		local centreY = top + (HEX_HEIGHT / 2)
+		local shared = {
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.fromOffset(centreX, centreY),
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			Parent = grid,
+		}
+		local marker: GuiObject
+		local fill: GuiObject
+		if useHex then
+			local markerProps = table.clone(shared)
+			markerProps.Size = UDim2.fromOffset(HEX_WIDTH + 6, HEX_HEIGHT + 7)
+			if hexImage then
+				markerProps.Image = hexImage
+			else
+				markerProps.ImageContent = hexContent
+			end
+			markerProps.ImageColor3 = Theme.White
+			markerProps.ImageTransparency = 1
+			markerProps.ZIndex = 44
+			marker = create("ImageLabel", markerProps) :: GuiObject
+			local fillProps = table.clone(shared)
+			fillProps.Size = UDim2.fromOffset(HEX_WIDTH, HEX_HEIGHT)
+			if hexImage then
+				fillProps.Image = hexImage
+			else
+				fillProps.ImageContent = hexContent
+			end
+			fillProps.ImageColor3 = color
+			fillProps.ZIndex = 45
+			fill = create("ImageLabel", fillProps) :: GuiObject
+		else
+			local markerProps = table.clone(shared)
+			markerProps.Size = UDim2.fromOffset(HEX_WIDTH + 6, HEX_HEIGHT + 7)
+			markerProps.BackgroundColor3 = Theme.White
+			markerProps.ZIndex = 44
+			marker = create("Frame", markerProps, { corner(7) }) :: GuiObject
+			local fillProps = table.clone(shared)
+			fillProps.Size = UDim2.fromOffset(HEX_WIDTH, HEX_HEIGHT)
+			fillProps.BackgroundColor3 = color
+			fillProps.BackgroundTransparency = 0
+			fillProps.ZIndex = 45
+			fill = create("Frame", fillProps, { corner(6) }) :: GuiObject
+		end
+		table.insert(cells, { Color = color, Fill = fill, Marker = marker, CentreX = centreX, CentreY = centreY })
+	end
+
+	for index, color in ipairs(colors) do
+		local slot = index - 1
+		local rowIndex = math.floor(slot / columns)
+		local columnIndex = slot % columns
+		local indent = (rowIndex % 2 == 1) and rowIndent or 0
+		addCell(color, (columnIndex * HEX_STEP_X) + indent, rowIndex * stepY)
+	end
+	for index, color in ipairs(greys) do
+		addCell(color, (index - 1) * HEX_STEP_X, greyTop)
+	end
+
+	local previewFill = create("Frame", {
+		Name = "Preview",
+		AnchorPoint = Vector2.new(0, 1),
+		Position = UDim2.new(0, PICKER_PADDING, 1, -PICKER_PADDING),
+		Size = UDim2.fromOffset(34, 30),
+		BackgroundColor3 = Theme.White,
+		BorderSizePixel = 0,
+		ZIndex = 43,
+		Parent = panel,
+	}, { corner(9), stroke(Theme.Border, Line.Inner, true) }) :: Frame
+	local hexBox = create("TextBox", {
+		Name = "HexInput",
+		AnchorPoint = Vector2.new(0, 1),
+		Position = UDim2.new(0, PICKER_PADDING + 42, 1, -PICKER_PADDING),
+		Size = UDim2.new(1, -(PICKER_PADDING * 2) - 42, 0, 30),
+		BackgroundColor3 = Theme.Selected,
+		BackgroundTransparency = 0.25,
+		BorderSizePixel = 0,
+		ClearTextOnFocus = false,
+		FontFace = Fonts.Mono,
+		PlaceholderText = "RRGGBB",
+		PlaceholderColor3 = Theme.FaintText,
+		Text = "FFFFFF",
+		TextColor3 = Theme.Text,
+		TextSize = 14,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		ZIndex = 43,
+		Parent = panel,
+	}, { corner(9), stroke(Theme.Border, Line.Inner, true), padding(0, 11, 0, 11) }) :: TextBox
+
+	local control = { Type = "Colorpicker", Value = Color3.fromRGB(255, 255, 255), Instance = row }
+	local popup = {}
+	local trackConnection: RBXScriptConnection? = nil
+
+	local function repaintCells()
+		for _, cell in ipairs(cells) do
+			local selected = cell.Color == control.Value
+			if selected then
+				cell.Marker[rimColor] = Theme.White
+				cell.Marker[rimTransparency] = 0
+			elseif cell == hoverCell then
+				cell.Marker[rimColor] = Theme.MutedText
+				cell.Marker[rimTransparency] = 0.45
+			else
+				cell.Marker[rimTransparency] = 1
+			end
+		end
+	end
+
+	function control:Set(value: any, silent: boolean?)
+		local color: Color3? = nil
+		if typeof(value) == "Color3" then
+			color = value
+		elseif type(value) == "string" then
+			color = hexToColor(value)
+		end
+		if not color then
+			return
+		end
+		self.Value = color
+		local hex = colorToHex(color)
+		swatchFill.BackgroundColor3 = color
+		swatchHex.Text = "#" .. hex
+		previewFill.BackgroundColor3 = color
+		if not hexBox:IsFocused() then
+			hexBox.Text = hex
+		end
+		repaintCells()
+		-- A silent set is programmatic (a config load, a Default being applied);
+		-- closing the popup on those yanks the grid out from under the pointer.
+		if not silent then
+			popup.Close()
+			safeCallback(options.Callback, color)
+		end
+	end
+	function control:OnChanged(callback)
+		options.Callback = callback
+		return self
+	end
+
+	-- The Voronoi cells of a hexagonal lattice ARE its hexagons, so the nearest
+	-- centre is exactly the hexagon a point falls in. That replaces both the
+	-- axial coordinate inverse and the row of overlapping rectangular hitboxes
+	-- that would otherwise steal each other's corners. The circumradius cap
+	-- rejects clicks that land in the padding rather than snapping them.
+	local hitRadius = HEX_HEIGHT / 2
+
+	local function cellAtPosition(position: Vector2)
+		local scale = panelScale.Scale
+		if scale <= 0 then
+			return nil
+		end
+		local localX = (position.X - grid.AbsolutePosition.X) / scale
+		local localY = (position.Y - grid.AbsolutePosition.Y) / scale
+		local best, bestDistance = nil, math.huge
+		for _, cell in ipairs(cells) do
+			local dx = localX - cell.CentreX
+			local dy = localY - cell.CentreY
+			local distance = (dx * dx) + (dy * dy)
+			if distance < bestDistance then
+				best, bestDistance = cell, distance
+			end
+		end
+		if best and bestDistance <= (hitRadius * hitRadius) then
+			return best
+		end
+		return nil
+	end
+
+	-- Cells are decorative; one transparent surface above them takes every input
+	-- so hit testing stays in the maths above.
+	local surface = button({
+		Name = "Surface",
+		Position = UDim2.fromOffset(PICKER_PADDING, PICKER_PADDING),
+		Size = UDim2.fromOffset(gridWidth, gridHeight),
+		BackgroundTransparency = 1,
+		ZIndex = 46,
+		Parent = panel,
+	})
+
+	local function positionPanel()
+		local anchor = swatch.AbsolutePosition
+		local anchorSize = swatch.AbsoluteSize
+		local scale = window._uiScale.Scale
+		panelScale.Scale = scale
+
+		local camera = workspace.CurrentCamera
+		local viewportHeight = camera and camera.ViewportSize.Y or 0
+		local viewportWidth = camera and camera.ViewportSize.X or 0
+		local panelPixelHeight = panelHeight * scale
+		local panelPixelWidth = panelWidth * scale
+		-- Right aligned to the swatch: the grid is wider than the control, so
+		-- left aligning pushed it off the right edge of the window.
+		local left = (anchor.X + anchorSize.X) - panelPixelWidth
+		if viewportWidth > 0 then
+			left = math.clamp(left, 8, math.max(8, viewportWidth - panelPixelWidth - 8))
+		end
+		local spaceBelow = viewportHeight - (anchor.Y + anchorSize.Y)
+		if viewportHeight > 0 and spaceBelow < panelPixelHeight + (14 * scale) then
+			panel.AnchorPoint = Vector2.new(0, 1)
+			panel.Position = UDim2.fromOffset(left, anchor.Y - (8 * scale))
+		else
+			panel.AnchorPoint = Vector2.new(0, 0)
+			panel.Position = UDim2.fromOffset(left, anchor.Y + anchorSize.Y + (8 * scale))
+		end
+	end
+
+	function popup.Close()
+		if not panel.Visible then
+			return
+		end
+		panel.Visible = false
+		hoverCell = nil
+		repaintCells()
+		if trackConnection then
+			trackConnection:Disconnect()
+			trackConnection = nil
+		end
+	end
+
+	function popup.Destroy()
+		popup.Close()
+	end
+
+	function popup.Open()
+		window:ClosePopups(popup)
+		panel.Visible = true
+		positionPanel()
+		-- Scrolling the page or dragging the window moves the swatch; follow it.
+		trackConnection = swatch:GetPropertyChangedSignal("AbsolutePosition"):Connect(positionPanel)
+		task.defer(function()
+			if panel.Visible then
+				positionPanel()
+			end
+		end)
+	end
+
+	table.insert(window._popups, popup)
+
+	table.insert(window._connections, swatch.MouseButton1Click:Connect(function()
+		if panel.Visible then
+			popup.Close()
+		else
+			popup.Open()
+		end
+	end))
+	table.insert(window._connections, surface.InputBegan:Connect(function(input)
+		if not isPressInput(input) then
+			return
+		end
+		local cell = cellAtPosition(Vector2.new(input.Position.X, input.Position.Y))
+		if cell then
+			control:Set(cell.Color)
+		end
+	end))
+	table.insert(window._connections, surface.InputChanged:Connect(function(input)
+		if not isMoveInput(input) then
+			return
+		end
+		local cell = cellAtPosition(Vector2.new(input.Position.X, input.Position.Y))
+		if cell ~= hoverCell then
+			hoverCell = cell
+			repaintCells()
+		end
+	end))
+	table.insert(window._connections, surface.MouseLeave:Connect(function()
+		if hoverCell then
+			hoverCell = nil
+			repaintCells()
+		end
+	end))
+	table.insert(window._connections, hexBox.FocusLost:Connect(function()
+		local color = hexToColor(hexBox.Text)
+		if color then
+			control:Set(color)
+		else
+			-- Reject rather than leave half typed text sitting on screen.
+			hexBox.Text = colorToHex(control.Value)
+		end
+	end))
+
+	control:Set(options.Default or Color3.fromRGB(255, 255, 255), true)
+	return registerFlag(self, options.Flag, control)
+end
+
+function SectionMethods:AddTextbox(options: any)
+	options = options or {}
+	local text = options.Text or "Textbox"
+	local row = controlRow(self, 82, text, options.Description, options.IconRole or "Logo")
+	local textbox = create("TextBox", {
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -5, 0.5, 0),
+		Size = UDim2.fromOffset(240, 44),
+		BackgroundColor3 = Theme.Selected,
+		BorderSizePixel = 0,
+		ClearTextOnFocus = false,
+		FontFace = Fonts.Mono,
+		PlaceholderText = options.Placeholder or "Type here...",
+		PlaceholderColor3 = Theme.FaintText,
+		Text = options.Default or "",
+		TextColor3 = Theme.Text,
+		TextSize = 13,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Parent = row,
+	}, { corner(12), stroke(Theme.Border, Line.Control, true), padding(0, 13, 0, 13) }) :: TextBox
+	local control = { Type = "Textbox", Value = textbox.Text, Instance = row }
+	function control:Set(value: string, silent: boolean?)
+		self.Value = tostring(value)
+		textbox.Text = self.Value
+		if not silent then
+			safeCallback(options.Callback, self.Value)
+		end
+	end
+	table.insert(self.Window._connections, textbox.FocusLost:Connect(function(enterPressed)
+		control.Value = textbox.Text
+		if not options.Finished or enterPressed then
+			safeCallback(options.Callback, control.Value)
+		end
+	end))
+	return registerFlag(self, options.Flag, control)
+end
+
+function SectionMethods:AddKeybind(options: any)
+	options = options or {}
+	local text = options.Text or "Keybind"
+	local row = controlRow(self, 76, text, options.Description, options.IconRole or "Logo")
+	local keyButton = button({
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -5, 0.5, 0),
+		Size = UDim2.fromOffset(96, 38),
+		BackgroundColor3 = Theme.Selected,
+		BackgroundTransparency = 0,
+		Text = "",
+		Parent = row,
+	}, { corner(11), stroke(Theme.Border, Line.Control, true) })
+	local keyLabel = label({
+		Size = UDim2.fromScale(1, 1),
+		Text = "",
+		FontFace = Fonts.Mono,
+		TextSize = 12,
+		TextXAlignment = Enum.TextXAlignment.Center,
+		Parent = keyButton,
+	})
+	local control = { Type = "Keybind", Value = options.Default or Enum.KeyCode.RightShift, Instance = row, Listening = false }
+	function control:Set(value: Enum.KeyCode, silent: boolean?)
+		self.Value = value
+		keyLabel.Text = value == Enum.KeyCode.Unknown and "None" or value.Name
+		if not silent then
+			safeCallback(options.ChangedCallback, value)
+		end
+	end
+	control:Set(control.Value, true)
+	table.insert(self.Window._connections, keyButton.MouseButton1Click:Connect(function()
+		control.Listening = true
+		keyLabel.Text = "..."
+	end))
+	table.insert(self.Window._inputBegan, function(input, processed)
+		if control.Listening then
+			-- Without the `processed` guard, typing into any textbox rebound the
+			-- key. Escape cancels, Backspace clears the bind.
+			if processed or input.KeyCode == Enum.KeyCode.Unknown then
+				return
+			end
+			control.Listening = false
+			if input.KeyCode == Enum.KeyCode.Escape then
+				control:Set(control.Value, true)
+			elseif input.KeyCode == Enum.KeyCode.Backspace or input.KeyCode == Enum.KeyCode.Delete then
+				control:Set(Enum.KeyCode.Unknown)
+			else
+				control:Set(input.KeyCode)
+			end
+			return
+		end
+		if not processed and control.Value ~= Enum.KeyCode.Unknown and input.KeyCode == control.Value then
+			safeCallback(options.Callback)
+		end
+	end)
+	return registerFlag(self, options.Flag, control)
+end
+
+return KittenHub
